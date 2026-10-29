@@ -31,11 +31,6 @@ except ImportError:  # pragma: no cover
     ui = None
 
 try:
-    from streamlit_option_menu import option_menu
-except ImportError:  # pragma: no cover
-    option_menu = None
-
-try:
     from streamlit_lottie import st_lottie
 except ImportError:  # pragma: no cover
     st_lottie = None
@@ -100,19 +95,377 @@ def show_centered_lottie(
             st_lottie(animation, height=240, key=key)
 
 
+BACKGROUND_IMAGE_URL = (
+    "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b"
+    "?auto=format&fit=crop&w=2000&q=80"
+)
+
+CUSTOM_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+
+.stApp {
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.55) 0%, rgba(15, 23, 42, 0.75) 100%),
+                url('""" + BACKGROUND_IMAGE_URL + """') no-repeat center center fixed;
+    background-size: cover;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    color: #f8fafc;
+}
+
+h1, h2, .main-title {
+    font-family: 'Cormorant Garamond', serif !important;
+    font-weight: 300 !important;
+    letter-spacing: -0.02em !important;
+    color: #ffffff !important;
+    text-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+/* Frosted-glass surfaces so content stays readable over the backdrop. */
+div[data-testid="stVerticalBlockBorderWrapper"] > div {
+    background: rgba(15, 23, 42, 0.6) !important;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    border-radius: 16px;
+}
+
+section[data-testid="stSidebar"] {
+    background: rgba(15, 23, 42, 0.65) !important;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+}
+
+.glass-card, div[data-testid="stExpander"], div[data-testid="stSidebar"] > div {
+    background: rgba(255, 255, 255, 0.07) !important;
+    backdrop-filter: blur(20px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 16px !important;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.25) !important;
+    padding: 1.5rem !important;
+}
+
+div[data-testid="stFileUploader"],
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] {
+    background: rgba(255, 255, 255, 0.07) !important;
+    backdrop-filter: blur(20px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+    border: 1px dotted rgba(255, 255, 255, 0.4) !important;
+    border-radius: 16px !important;
+}
+
+/* High-contrast labels for toggles and widgets */
+div[data-testid="stWidgetLabel"] p,
+.stToggle label p,
+label[data-testid="stWidgetLabel"] {
+    color: #ffffff !important;
+    font-weight: 500 !important;
+    font-size: 0.95rem !important;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7) !important;
+}
+
+/* Centered frosted glass pill for toggle */
+div[data-testid="stCheckbox"] {
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    border-radius: 50px !important;
+    padding: 0.6rem 1.5rem !important;
+    margin: 1rem auto !important;
+    width: fit-content !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25) !important;
+}
+
+/* Ensure label inside pill is crisp */
+div[data-testid="stCheckbox"] label span p {
+    color: #ffffff !important;
+    font-weight: 500 !important;
+    font-size: 0.95rem !important;
+    letter-spacing: 0.02em !important;
+}
+
+/* Horizontal capsule navbar with translucent active pill */
+div[data-testid="stHorizontalBlock"] {
+    justify-content: center !important;
+}
+
+div[data-testid="stRadio"] {
+    display: flex !important;
+    justify-content: center !important;
+    width: 100% !important;
+}
+
+div[data-testid="stRadio"] > div[role="radiogroup"] {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    white-space: nowrap !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: #0d0e12 !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    border-radius: 50px !important;
+    padding: 6px 10px !important;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+    gap: 8px !important;
+    width: fit-content !important;
+    margin: 0 auto 2rem auto !important;
+}
+
+/* Hide default radio circles completely */
+div[data-testid="stRadio"] div[role="radiogroup"] label > div:first-child {
+    display: none !important;
+}
+
+/* Pill tab labels locked to a single row */
+div[data-testid="stRadio"] div[role="radiogroup"] label {
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: 30px !important;
+    padding: 8px 16px !important;
+    color: rgba(255, 255, 255, 0.7) !important;
+    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+    cursor: pointer !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+}
+
+/* Crisp white inline-SVG vector icons per tab */
+div[data-testid="stRadio"] div[role="radiogroup"] > label:nth-of-type(1)::before {
+    content: "" !important;
+    width: 16px !important;
+    height: 16px !important;
+    flex-shrink: 0 !important;
+    background: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z'/><circle cx='12' cy='13' r='4'/></svg>") no-repeat center / contain !important;
+}
+
+div[data-testid="stRadio"] div[role="radiogroup"] > label:nth-of-type(2)::before {
+    content: "" !important;
+    width: 16px !important;
+    height: 16px !important;
+    flex-shrink: 0 !important;
+    background: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z'/><line x1='8' y1='2' x2='8' y2='18'/><line x1='16' y1='6' x2='16' y2='22'/></svg>") no-repeat center / contain !important;
+}
+
+div[data-testid="stRadio"] div[role="radiogroup"] > label:nth-of-type(3)::before {
+    content: "" !important;
+    width: 16px !important;
+    height: 16px !important;
+    flex-shrink: 0 !important;
+    background: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/></svg>") no-repeat center / contain !important;
+}
+
+/* Selected active tab: translucent frosted-glass pill */
+div[data-testid="stRadio"] div[role="radiogroup"] label[data-checked="true"],
+div[data-testid="stRadio"] div[role="radiogroup"] input:checked + div {
+    background: rgba(255, 255, 255, 0.18) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.3) !important;
+    color: #ffffff !important;
+    padding: 8px 22px !important;
+    border-radius: 30px !important;
+    font-weight: 700 !important;
+    box-shadow: 0 4px 15px rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Hover effect for unselected tabs */
+div[data-testid="stRadio"] div[role="radiogroup"] label:hover {
+    color: #ffffff !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Hide Streamlit default top header bar completely */
+header[data-testid="stHeader"],
+div[data-testid="stHeader"],
+div[data-testid="stToolbar"],
+.stAppHeader {
+    background-color: transparent !important;
+    background: transparent !important;
+    display: none !important;
+    visibility: hidden !important;
+    height: 0px !important;
+}
+
+/* Remove the extra top white padding forced by Streamlit */
+.main .block-container,
+div[data-testid="stAppViewBlockContainer"] {
+    padding-top: 1.5rem !important;
+    padding-bottom: 2rem !important;
+    margin-top: 0px !important;
+}
+
+/* Ensure the app canvas touches the absolute top edge */
+.stApp {
+    top: 0 !important;
+    margin-top: 0 !important;
+}
+
+/* Centered Single Glass Container Card */
+.upload-card {
+    background: rgba(15, 23, 42, 0.6) !important;
+    backdrop-filter: blur(20px) saturate(160%) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 24px !important;
+    padding: 2rem !important;
+    max-width: 620px !important;
+    margin: 1rem auto 2rem auto !important;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* Center the bordered upload form card at readable width */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    max-width: 620px !important;
+    margin: 1rem auto 2rem auto !important;
+}
+
+/* High contrast white labels */
+.upload-card label,
+div[data-testid="stWidgetLabel"] p,
+label[data-testid="stWidgetLabel"] {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    font-size: 0.95rem !important;
+    letter-spacing: 0.02em !important;
+    margin-bottom: 0.5rem !important;
+}
+
+/* Re-style Streamlit Native File Uploader Dropzone */
+div[data-testid="stFileUploader"] {
+    margin-bottom: 1.5rem !important;
+}
+
+section[data-testid="stFileUploadDropzone"] {
+    background: rgba(255, 255, 255, 0.05) !important;
+    border: 1px dashed rgba(255, 255, 255, 0.25) !important;
+    border-radius: 16px !important;
+    padding: 1.5rem 1rem !important;
+    transition: all 0.3s ease !important;
+}
+
+section[data-testid="stFileUploadDropzone"]:hover {
+    background: rgba(255, 255, 255, 0.09) !important;
+    border-color: rgba(255, 255, 255, 0.45) !important;
+}
+
+/* Upload dropzone text color */
+section[data-testid="stFileUploadDropzone"] span,
+section[data-testid="stFileUploadDropzone"] div,
+section[data-testid="stFileUploadDropzone"] small {
+    color: rgba(255, 255, 255, 0.75) !important;
+}
+
+/* Restyle inner dropzone button to dark glass pill matching the text input */
+section[data-testid="stFileUploadDropzone"] button {
+    background: rgba(18, 18, 22, 0.85) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    border-radius: 12px !important;
+    color: #ffffff !important;
+    font-weight: 500 !important;
+    padding: 0.55rem 1.3rem !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3) !important;
+    transition: all 0.25s ease !important;
+}
+
+section[data-testid="stFileUploadDropzone"] button:hover {
+    background: rgba(30, 30, 38, 0.95) !important;
+    border-color: rgba(255, 255, 255, 0.35) !important;
+    color: #ffffff !important;
+    transform: translateY(-1px);
+}
+
+/* Make upload icon inside button white */
+section[data-testid="stFileUploadDropzone"] button svg {
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+}
+
+/* Style dropzone background and secondary text */
+section[data-testid="stFileUploadDropzone"] {
+    background: rgba(255, 255, 255, 0.04) !important;
+    border: 1px dashed rgba(255, 255, 255, 0.2) !important;
+    border-radius: 16px !important;
+}
+
+section[data-testid="stFileUploadDropzone"] span,
+section[data-testid="stFileUploadDropzone"] small {
+    color: rgba(255, 255, 255, 0.55) !important;
+    font-size: 0.9rem !important;
+}
+
+/* Keep staged file rows dark (no light blocks after selection) */
+div[data-testid="stFileUploader"] li,
+div[data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] {
+    background: rgba(255, 255, 255, 0.06) !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 12px !important;
+    color: #ffffff !important;
+}
+
+/* Dark Glass Regional Hint Input Box */
+div[data-testid="stTextInput"] input {
+    background: rgba(0, 0, 0, 0.35) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border-radius: 12px !important;
+    color: #ffffff !important;
+    padding: 0.75rem 1rem !important;
+    font-size: 0.92rem !important;
+    transition: all 0.3s ease !important;
+}
+
+div[data-testid="stTextInput"] input:focus {
+    border-color: rgba(255, 255, 255, 0.5) !important;
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Legible greyed-out placeholder */
+div[data-testid="stTextInput"] input::placeholder {
+    color: rgba(255, 255, 255, 0.5) !important;
+}
+
+/* Centered Full-Width Action Button */
+div.stButton {
+    display: flex !important;
+    justify-content: center !important;
+    margin-top: 1.5rem !important;
+}
+div.stButton > button {
+    background: rgba(255, 255, 255, 0.9) !important;
+    color: #0f172a !important;
+    font-weight: 700 !important;
+    border-radius: 30px !important;
+    padding: 0.75rem 3rem !important;
+    font-size: 1rem !important;
+    transition: all 0.3s ease !important;
+    border: none !important;
+    box-shadow: 0 4px 20px rgba(255, 255, 255, 0.2) !important;
+}
+div.stButton > button:hover {
+    background: #ffffff !important;
+    transform: translateY(-2px) scale(1.02) !important;
+    box-shadow: 0 8px 25px rgba(255, 255, 255, 0.35) !important;
+}
+</style>
+"""
+
+
+def inject_custom_css() -> None:
+    """Inject Google Fonts, the misty-mountain backdrop, and header styles."""
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+
 def inject_heading_styles() -> None:
-    st.markdown(
-        """
-        <style>
-        h1, h2, h3 {
-            font-weight: 600 !important;
-            letter-spacing: -0.5px !important;
-            font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    inject_custom_css()
 
 
 def render_result_map(result: dict) -> None:
@@ -393,6 +746,35 @@ def render_wonder_section(
                 render_wonder_folium_map(result)
 
 
+def render_validation_badge(text: str) -> None:
+    """Centered frosted-glass success pill above the image preview."""
+    st.markdown(
+        f"""
+        <div style="
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: rgba(34, 197, 94, 0.15);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(74, 222, 128, 0.4);
+            border-radius: 30px;
+            padding: 10px 20px;
+            margin: 1.5rem auto;
+            width: fit-content;
+            box-shadow: 0 4px 20px rgba(34, 197, 94, 0.15);
+        ">
+            <span style="font-size: 1.1rem;">✨</span>
+            <span style="color: #4ade80; font-weight: 600; font-size: 0.9rem; letter-spacing: 0.02em;">
+                {text}
+            </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_home(developer_mode: bool = False) -> None:
     st.session_state.setdefault("is_processing", False)
     st.session_state.setdefault("analysis_pending", False)
@@ -401,15 +783,39 @@ def render_home(developer_mode: bool = False) -> None:
     st.session_state.setdefault("screened_image", None)
     st.session_state.setdefault("sam_result", None)
     st.session_state.setdefault("wonder_result", None)
-    st.session_state.setdefault("developer_mode", developer_mode)
-    if st.session_state.developer_mode:
-        developer_mode = True
-    else:
-        developer_mode = False
+    if "dev_mode" not in st.session_state:
+        if "developer_mode" in st.session_state:
+            st.session_state["dev_mode"] = st.session_state["developer_mode"]
+        else:
+            st.session_state["dev_mode"] = developer_mode
+    if "developer_mode" not in st.session_state:
+        st.session_state["developer_mode"] = st.session_state["dev_mode"]
+    developer_mode = bool(st.session_state["dev_mode"])
     is_processing = st.session_state["is_processing"]
 
-    st.title("SpatialGeoGuesser")
-    st.caption("Upload a memory photo and add an optional regional hint.")
+    st.markdown(
+        """
+        <div style="text-align: center; padding: 2.5rem 0 1.5rem 0;">
+            <p style="text-transform: uppercase; letter-spacing: 0.25em; font-size: 0.8rem; color: rgba(255,255,255,0.7); margin-bottom: 0.5rem;">Spatial Reasoning Engine</p>
+            <h1 style="font-size: 3.5rem; margin-bottom: 0.5rem;">SpatialGeoguesser</h1>
+            <p style="font-size: 1.05rem; color: rgba(255,255,255,0.8); max-width: 600px; margin: 0 auto; font-weight: 300;">
+                Privacy-first multi-hypothesis spatial triangulation powered by SAM 3.1 and Muse Wonder.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.space("small")
+
+    _, center_col, _ = st.columns([1, 2, 1])
+    with center_col:
+        dev_mode = st.toggle("Developer Mode (Use Mock Data)", value=False, key="dev_mode")
+    if isinstance(dev_mode, bool):
+        developer_mode = dev_mode
+    else:
+        # Test doubles return a mock; session_state stays the source of truth.
+        developer_mode = bool(st.session_state["dev_mode"])
+    st.session_state["developer_mode"] = developer_mode
     st.space("small")
 
     if ui is None:
@@ -420,29 +826,30 @@ def render_home(developer_mode: bool = False) -> None:
         )
         return
 
-    ui.card(
-        title="Upload memory",
-        description="JPEG, PNG, or WebP up to 10 MB.",
-        key="upload_card",
-    )
-
     st.space("small")
     with st.container(border=True):
         uploaded_file = st.file_uploader(
-            "Upload an image",
+            "Upload a memory",
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
-            help="JPEG, PNG, or WebP up to 10 MB.",
+            help="Sanitized locally with metadata removal and face blurring before spatial analysis.",
             disabled=is_processing,
         )
         st.space("small")
         regional_hint = st.text_input(
-            "Regional hint",
-            placeholder="e.g. coastal town, temple architecture, alpine village",
+            "Regional hint (Optional)",
+            placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
+            help="Providing a state, landmark, or landscape context helps narrow spatial confidence faster.",
         )
-        st.space("small")
+    st.space("small")
+    _, btn_col, _ = st.columns([1, 2, 1])
+    with btn_col:
         analyze_clicked = ui.button(
-            "Analyze Memory", key="analyze_btn", disabled=is_processing
+            "Analyze Memory",
+            key="analyze_btn",
+            size="lg",
+            width="stretch",
+            disabled=is_processing,
         )
 
     if analyze_clicked and not is_processing:
@@ -455,35 +862,38 @@ def render_home(developer_mode: bool = False) -> None:
         if not valid:
             st.error(message)
         else:
-            clean_ok, clean_message, rgb_image = sanitize_uploaded_image(
-                uploaded_file
-            )
-            if not clean_ok:
-                st.error(clean_message)
-            else:
-                data_ok, data_message, _ = has_sufficient_visual_data(rgb_image)
-                if not data_ok:
-                    st.warning(data_message)
+            with st.spinner("Processing & Sanitizing Image..."):
+                clean_ok, clean_message, rgb_image = sanitize_uploaded_image(
+                    uploaded_file
+                )
+                if not clean_ok:
+                    st.error(clean_message)
                 else:
-                    status, face_message, safe_image = screen_image_faces(
+                    data_ok, data_message, _ = has_sufficient_visual_data(
                         rgb_image
                     )
-                    if status == "rejected":
-                        st.error(face_message)
-                    elif status == "error":
-                        st.error(face_message)
+                    if not data_ok:
+                        st.warning(data_message)
                     else:
-                        if status == "blurred":
-                            st.warning(face_message)
-                        else:
-                            st.success(
-                                f"{message} {clean_message} {face_message}"
-                            )
-                        st.image(
-                            safe_image, caption="Privacy-safe preview",
-                            use_container_width=True,
+                        status, face_message, safe_image = screen_image_faces(
+                            rgb_image
                         )
-                        st.session_state["screened_image"] = safe_image
+                        if status == "rejected":
+                            st.error(face_message)
+                        elif status == "error":
+                            st.error(face_message)
+                        else:
+                            if status == "blurred":
+                                st.warning(face_message)
+                            else:
+                                render_validation_badge(
+                                    f"{message} {clean_message} {face_message}"
+                                )
+                            st.image(
+                                safe_image, caption="Privacy-safe preview",
+                                width="stretch",
+                            )
+                            st.session_state["screened_image"] = safe_image
 
     if st.session_state["analysis_pending"] and is_processing:
         label = (
@@ -535,9 +945,27 @@ def render_home(developer_mode: bool = False) -> None:
     render_analysis_outcome(st.session_state["analysis_outcome"])
 
 
+PIPELINE_DIAGRAM = """```mermaid
+flowchart LR
+    A["Upload photo"] --> B["Validate + strip metadata"]
+    B --> C["Visual-data gate"]
+    C --> D["Face screening"]
+    D -->|"Face > 5%: reject"| X["Halt with message"]
+    D -->|"Clean or blurred"| E["SAM 3.1 segmentation"]
+    E --> F["Wonder reasoning + hint"]
+    F --> G["Round + build result"]
+    G --> H["Metrics + map"]
+    B -.->|"Developer Mode"| M["Mock result"]
+    M --> H
+```"""
+
+
 def render_how_it_works() -> None:
     st.title("How it Works")
     st.caption("From photo to place.")
+    st.subheader("Pipeline architecture")
+    st.markdown(PIPELINE_DIAGRAM)
+    st.subheader("How each stage works")
     st.markdown(
         "1. **Upload** a JPEG, PNG, or WebP photo (max 10 MB). Files are "
         "stripped of metadata and normalized to RGB at full resolution.\n"
@@ -548,7 +976,9 @@ def render_how_it_works() -> None:
         "4. **Analyze** to get location hypotheses based on visual clues.\n"
         "5. **Live mode**: with Developer Mode off, Analyze runs SAM 3.1 "
         "segmentation and Muse Wonder geolocation directly via the Meta "
-        "Model API."
+        "Model API.\n"
+        "6. **Developer Mode**: with the toggle on, Analyze skips the API "
+        "and returns instant mock data for UI testing."
     )
 
 
@@ -558,9 +988,34 @@ def render_privacy_safety() -> None:
         "No images containing unblurred faces are processed. "
         "Please blur or crop out faces before uploading."
     )
+    st.subheader("Local face screening")
     st.markdown(
-        "Uploads are validated by type and size, previewed locally in your "
-        "browser, and never stored with identifying facial information."
+        "- Every upload is screened for faces before anything else runs.\n"
+        "- Any face covering more than 5% of the image area is "
+        "**rejected**.\n"
+        "- Smaller faces are **blurred automatically**, and only the "
+        "privacy-safe preview is shown and analyzed."
+    )
+    st.subheader("Zero-data logging")
+    st.markdown(
+        "- Uploads are validated in memory: metadata (EXIF) is stripped and "
+        "images are normalized to RGB.\n"
+        "- No image is written to disk or kept after your session: analysis "
+        "state lives only in Streamlit session state.\n"
+        "- Uploads are previewed locally in your browser and never stored "
+        "with identifying facial information."
+    )
+    st.subheader("Security & compliance")
+    st.markdown(
+        "- The Meta Model API key is read from Streamlit secrets "
+        "(`META_API_KEY`) and never hard-coded or logged.\n"
+        "- Only screened, privacy-safe images leave the browser, and only "
+        "to run segmentation and geolocation.\n"
+        "- Returned coordinates are rounded before display, and precision "
+        "is shown as a radius so exact locations stay private.\n"
+        "- Every gate fails closed: uploads that are invalid, lack visual "
+        "data, or fail face screening halt with a message instead of "
+        "guessing."
     )
 
 
@@ -568,54 +1023,22 @@ def main() -> None:
     st.set_page_config(page_title="SpatialGeoGuesser", layout="centered")
     inject_heading_styles()
 
-    developer_mode = st.sidebar.toggle(
-        "Developer Mode (Use Mock Data)",
-        value=False,
-        key="developer_mode",
-        help="When on, Analyze Memory returns instant mock data instead of "
-        "calling the Meta Model API directly.",
-    )
-
-    if option_menu is None:
-        st.error(
-            "Missing dependency `streamlit-option-menu`. "
-            "Install it with: `pip install streamlit-option-menu`"
+    _, nav_col, _ = st.columns([1, 3, 1])
+    with nav_col:
+        nav_selection = st.radio(
+            label="",
+            options=["Home", "How it Works", "Privacy & Safety"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="main_nav",
         )
-        return
 
-    selected = option_menu(
-        menu_title=None,
-        options=["Home (Upload)", "How it Works", "Privacy & Safety"],
-        icons=["camera", "map", "shield"],
-        menu_icon="cast",
-        default_index=0,
-        orientation="horizontal",
-        styles={
-            "container": {
-                "padding": "0!important",
-                "background-color": "#1E1E1E",
-            },
-            "icon": {"color": "white", "font-size": "16px"},
-            "nav-link": {
-                "font-size": "15px",
-                "text-align": "center",
-                "margin": "0px",
-                "color": "white",
-                "--hover-color": "#333333",
-            },
-            "nav-link-selected": {
-                "background-color": "#00FFAA",
-                "color": "#1E1E1E",
-            },
-        },
-    )
-
-    if selected == "Home (Upload)":
-        render_home(developer_mode)
-    elif selected == "How it Works":
-        render_how_it_works()
-    else:
-        render_privacy_safety()
+    views = {
+        "Home": render_home,
+        "How it Works": render_how_it_works,
+        "Privacy & Safety": render_privacy_safety,
+    }
+    views.get(nav_selection, render_home)()
 
 
 if __name__ == "__main__":

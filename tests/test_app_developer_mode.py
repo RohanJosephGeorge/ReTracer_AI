@@ -1,4 +1,4 @@
-"""Regression: sidebar toggle is source of truth; single Analyze button.
+"""Regression: main-page toggle session_state is source of truth; single Analyze button.
 
 Run: python -m unittest discover -s tests -v
 Requires streamlit and pandas. Streamlit is mocked: no browser.
@@ -46,6 +46,7 @@ class DeveloperModeToggleTests(unittest.TestCase):
         mock_st.session_state = state
         mock_st.file_uploader.return_value = None
         mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
         mock_ui = MagicMock()
         mock_ui.button.return_value = False
         execute = MagicMock(
@@ -59,6 +60,7 @@ class DeveloperModeToggleTests(unittest.TestCase):
             patch.object(app, "ui", mock_ui),
             patch.object(app, "execute_analysis", execute),
             patch.object(app, "execute_live_analysis_direct", direct),
+            patch.object(app, "load_lottie_animation", return_value=None),
         ):
             app.render_home(developer_mode=param)
         return execute, direct
@@ -101,6 +103,7 @@ class SingleButtonFlowTests(unittest.TestCase):
         mock_st.session_state = state
         mock_st.file_uploader.return_value = None
         mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
         mock_st.button.return_value = False
         # Keep the upload-key guard from resetting our staged state.
         mock_st.session_state["last_upload_key"] = None
@@ -115,7 +118,11 @@ class SingleButtonFlowTests(unittest.TestCase):
             self.assertNotIn("SAM 3.1", call.args[0])
         mock_st.button.assert_not_called()
         mock_ui.button.assert_called_once_with(
-            "Analyze Memory", key="analyze_btn", disabled=False
+            "Analyze Memory",
+            key="analyze_btn",
+            size="lg",
+            width="stretch",
+            disabled=False,
         )
 
 

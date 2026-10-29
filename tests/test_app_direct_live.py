@@ -82,6 +82,7 @@ class ToggleDefaultTests(unittest.TestCase):
         mock_st.session_state = state
         mock_st.file_uploader.return_value = None
         mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
         mock_ui = MagicMock()
         mock_ui.button.return_value = False
         with (
@@ -91,18 +92,173 @@ class ToggleDefaultTests(unittest.TestCase):
             app.render_home()
         self.assertFalse(state["developer_mode"])
 
-    def test_sidebar_toggle_defaults_off(self):
+    def test_main_page_toggle_defaults_off(self):
+        state = StateDict(
+            {
+                "is_processing": False,
+                "analysis_pending": False,
+                "analysis_outcome": None,
+                "last_upload_key": None,
+                "screened_image": None,
+                "sam_result": None,
+                "wonder_result": None,
+            }
+        )
         mock_st = MagicMock()
-        mock_st.sidebar.toggle.return_value = False
+        mock_st.session_state = state
+        mock_st.file_uploader.return_value = None
+        mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
+        mock_ui = MagicMock()
+        mock_ui.button.return_value = False
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "option_menu", MagicMock(return_value="Home (Upload)")),
+            patch.object(app, "ui", mock_ui),
+        ):
+            app.render_home()
+        mock_st.toggle.assert_called_once_with(
+            "Developer Mode (Use Mock Data)", value=False, key="dev_mode"
+        )
+        self.assertEqual(mock_st.columns.call_count, 2)
+        for call in mock_st.columns.call_args_list:
+            self.assertEqual(call.args, ([1, 2, 1],))
+        mock_st.sidebar.toggle.assert_not_called()
+
+    def test_main_routes_nav_radio_selection(self):
+        mock_st = MagicMock()
+        mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
+        mock_st.radio.return_value = "How it Works"
+        with (
+            patch.object(app, "st", mock_st),
             patch.object(app, "render_home") as mock_home,
+            patch.object(app, "render_how_it_works") as mock_how,
+            patch.object(app, "render_privacy_safety") as mock_privacy,
         ):
             app.main()
-        _, kwargs = mock_st.sidebar.toggle.call_args
-        self.assertFalse(kwargs["value"])
-        self.assertEqual(kwargs["key"], "developer_mode")
+        mock_st.radio.assert_called_once_with(
+            label="",
+            options=["Home", "How it Works", "Privacy & Safety"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="main_nav",
+        )
+        mock_st.columns.assert_called_once_with([1, 3, 1])
+        mock_how.assert_called_once_with()
+        mock_home.assert_not_called()
+        mock_privacy.assert_not_called()
+        mock_st.sidebar.toggle.assert_not_called()
+
+    def test_main_home_nav_renders_home(self):
+        mock_st = MagicMock()
+        mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
+        mock_st.radio.return_value = "Home"
+        with (
+            patch.object(app, "st", mock_st),
+            patch.object(app, "render_home") as mock_home,
+            patch.object(app, "render_how_it_works") as mock_how,
+            patch.object(app, "render_privacy_safety") as mock_privacy,
+        ):
+            app.main()
+        mock_home.assert_called_once_with()
+        mock_how.assert_not_called()
+        mock_privacy.assert_not_called()
+
+    def test_custom_css_has_high_contrast_widget_labels(self):
+        self.assertIn('div[data-testid="stWidgetLabel"]', app.CUSTOM_CSS)
+        self.assertIn(".stToggle label p", app.CUSTOM_CSS)
+        self.assertIn("color: #ffffff", app.CUSTOM_CSS)
+
+    def test_custom_css_has_toggle_glass_pill(self):
+        self.assertIn('div[data-testid="stCheckbox"]', app.CUSTOM_CSS)
+        self.assertIn("border-radius: 50px", app.CUSTOM_CSS)
+        self.assertIn(
+            'div[data-testid="stCheckbox"] label span p', app.CUSTOM_CSS
+        )
+
+    def test_custom_css_has_expanding_pill_navbar(self):
+        self.assertIn(
+            'div[data-testid="stRadio"] > div[role="radiogroup"]',
+            app.CUSTOM_CSS,
+        )
+        self.assertIn("background: #0d0e12", app.CUSTOM_CSS)
+        self.assertIn("flex-wrap: nowrap", app.CUSTOM_CSS)
+        self.assertIn("white-space: nowrap", app.CUSTOM_CSS)
+        self.assertIn(
+            "transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+            app.CUSTOM_CSS,
+        )
+        self.assertIn(
+            'div[role="radiogroup"] label > div:first-child',
+            app.CUSTOM_CSS,
+        )
+        self.assertIn(
+            "background: rgba(255, 255, 255, 0.18)", app.CUSTOM_CSS
+        )
+        self.assertIn("data:image/svg+xml", app.CUSTOM_CSS)
+        self.assertNotIn("📷", app.CUSTOM_CSS)
+        self.assertNotIn("🗺️", app.CUSTOM_CSS)
+        self.assertNotIn("🛡️", app.CUSTOM_CSS)
+
+    def test_custom_css_has_glass_form_card(self):
+        self.assertIn(".upload-card {", app.CUSTOM_CSS)
+        self.assertIn("max-width: 620px", app.CUSTOM_CSS)
+        self.assertIn(
+            "background: rgba(15, 23, 42, 0.6)", app.CUSTOM_CSS
+        )
+        self.assertIn(
+            'div[data-testid="stFileUploader"] li', app.CUSTOM_CSS
+        )
+        self.assertIn(
+            'div[data-testid="stVerticalBlockBorderWrapper"]',
+            app.CUSTOM_CSS,
+        )
+        self.assertIn(
+            'div[data-testid="stTextInput"] input', app.CUSTOM_CSS
+        )
+        self.assertIn("background: rgba(0, 0, 0, 0.35)", app.CUSTOM_CSS)
+        self.assertIn("input::placeholder", app.CUSTOM_CSS)
+        self.assertIn(
+            "color: rgba(255, 255, 255, 0.5)", app.CUSTOM_CSS
+        )
+        self.assertIn(
+            'section[data-testid="stFileUploadDropzone"]', app.CUSTOM_CSS
+        )
+        self.assertIn(
+            'section[data-testid="stFileUploadDropzone"]:hover',
+            app.CUSTOM_CSS,
+        )
+        self.assertIn(
+            "background: rgba(255, 255, 255, 0.9)", app.CUSTOM_CSS
+        )
+
+    def test_custom_css_styles_inner_dropzone_button(self):
+        self.assertIn(
+            'section[data-testid="stFileUploadDropzone"] button {',
+            app.CUSTOM_CSS,
+        )
+        self.assertIn(
+            "background: rgba(18, 18, 22, 0.85)", app.CUSTOM_CSS
+        )
+        self.assertIn(
+            'section[data-testid="stFileUploadDropzone"] button:hover',
+            app.CUSTOM_CSS,
+        )
+        self.assertIn(
+            'section[data-testid="stFileUploadDropzone"] button svg',
+            app.CUSTOM_CSS,
+        )
+        self.assertIn(
+            "background: rgba(255, 255, 255, 0.04)", app.CUSTOM_CSS
+        )
+
+    def test_custom_css_hides_header_and_trims_top_margin(self):
+        self.assertIn('header[data-testid="stHeader"]', app.CUSTOM_CSS)
+        self.assertIn(".stAppHeader", app.CUSTOM_CSS)
+        self.assertIn("display: none", app.CUSTOM_CSS)
+        self.assertIn(
+            'div[data-testid="stAppViewBlockContainer"]', app.CUSTOM_CSS
+        )
+        self.assertIn("padding-top: 1.5rem", app.CUSTOM_CSS)
 
 
 class DirectLivePipelineTests(unittest.TestCase):
@@ -123,6 +279,7 @@ class DirectLivePipelineTests(unittest.TestCase):
         mock_st.session_state = state
         mock_st.file_uploader.return_value = None
         mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
         mock_ui = MagicMock()
         mock_ui.button.return_value = False
         mock_execute = MagicMock()
@@ -134,6 +291,7 @@ class DirectLivePipelineTests(unittest.TestCase):
             patch.object(app, "ui", mock_ui),
             patch.object(app, "execute_analysis", mock_execute),
             patch.object(app, "execute_live_analysis_direct", mock_direct),
+            patch.object(app, "load_lottie_animation", return_value=None),
         ):
             app.render_home(developer_mode=False)
         mock_execute.assert_not_called()
