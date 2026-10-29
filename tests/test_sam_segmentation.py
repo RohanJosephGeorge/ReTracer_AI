@@ -7,6 +7,7 @@ fully mocked. Fixture mask payloads are generated with the official
 parser's own encoder so they are valid by construction.
 """
 
+import asyncio
 import base64
 import io
 import json
@@ -14,8 +15,12 @@ import unittest
 import unittest.mock
 from unittest.mock import patch
 
+import aiohttp
 import numpy as np
-from meta_sam_parser import SegmentationMaskRecord
+from meta_sam_parser import (
+    ResponsesStreamSourceError,
+    SegmentationMaskRecord,
+)
 from meta_sam_parser._mask_codec import _encode_raster
 from PIL import Image
 from tenacity import (
@@ -35,6 +40,7 @@ from sam_segmentation import (
     SamRetryableError,
     SamSegmenter,
     draw_mask_boxes,
+    has_transient_cause,
     select_latest_masks,
     sniff_image_mime,
     summarize_masks,
@@ -110,6 +116,48 @@ class FakeSession:
         self.calls.append({"url": url, **kwargs})
         index = min(len(self.calls) - 1, len(self._responses) - 1)
         return self._responses[index]
+
+
+class RaisingSession:
+    """Session whose POST always fails at the connection level."""
+
+    def __init__(self, error):
+        self.calls = []
+        self._error = error
+
+    def post(self, url, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        raise self._error
+
+
+class ExplodingContent:
+    """Stream content that drops like a severed connection."""
+
+    def __init__(self, error):
+        self._error = error
+
+    def __aiter__(self):
+        async def gen():
+            raise self._error
+            yield b""  # pragma: no cover - unreachable
+
+        return gen()
+
+
+class ExplodingResponse(FakeResponse):
+    def __init__(self, error):
+        super().__init__(status=200)
+        self._error = error
+
+    @property
+    def content(self):
+        return ExplodingContent(self._error)
+
+
+class BadJsonResponse(FakeResponse):
+    @property
+    def content(self):
+        return FakeContent(b"data: this is not json\n\n")
 
 
 def fast_retrying():
@@ -342,6 +390,95 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         result = await seg.segment_image(gradient_png(), concepts="text")
         self.assertEqual(result["mask_count"], 1)
         self.assertEqual(seen, [(1, 2), (2, 4)])
+
+    async def test_connection_drop_retries_three_times(self):
+        session = RaisingSession(
+            aiohttp.ClientConnectionError("connection reset by peer")
+        )
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        with self.assertRaises(SamRetryableError):
+            await seg.segment_image(gradient_png(), concepts="text")
+        self.assertEqual(len(session.calls), 3)
+
+    async def test_timeout_retries_three_times(self):
+        session = RaisingSession(asyncio.TimeoutError())
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        with self.assertRaises(SamRetryableError):
+            await seg.segment_image(gradient_png(), concepts="text")
+        self.assertEqual(len(session.calls), 3)
+
+    async def test_winerror_socket_fault_retries_and_reports(self):
+        session = RaisingSession(
+            OSError(
+                "[WinError 121] The semaphore timeout period has expired"
+            )
+        )
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        with self.assertRaises(SamRetryableError) as ctx:
+            await seg.segment_image(gradient_png(), concepts="text")
+        self.assertIn("WinError 121", str(ctx.exception))
+        self.assertEqual(len(session.calls), 3)
+
+    async def test_midstream_drop_retries(self):
+        session = FakeSession(
+            ExplodingResponse(
+                aiohttp.ClientPayloadError("connection lost mid-stream")
+            )
+        )
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        with self.assertRaises(SamRetryableError):
+            await seg.segment_image(gradient_png(), concepts="text")
+        self.assertEqual(len(session.calls), 3)
+
+    async def test_malformed_stream_never_retries(self):
+        session = FakeSession(BadJsonResponse())
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        with self.assertRaises(SamApiError) as ctx:
+            await seg.segment_image(gradient_png(), concepts="text")
+        self.assertNotIsInstance(ctx.exception, SamRetryableError)
+        self.assertEqual(len(session.calls), 1)
+
+
+class TransientCauseTests(unittest.TestCase):
+    def test_direct_transport_errors_are_transient(self):
+        self.assertTrue(
+            has_transient_cause(
+                aiohttp.ClientConnectionError("connection reset")
+            )
+        )
+        self.assertTrue(has_transient_cause(asyncio.TimeoutError()))
+        self.assertTrue(
+            has_transient_cause(
+                OSError(
+                    "[WinError 121] The semaphore timeout period "
+                    "has expired"
+                )
+            )
+        )
+
+    def test_wrapped_transport_errors_are_transient(self):
+        cause = OSError(
+            "[WinError 121] The semaphore timeout period has expired"
+        )
+        wrapped = ResponsesStreamSourceError("iterator", cause)
+        self.assertTrue(has_transient_cause(wrapped))
+
+    def test_non_transport_errors_are_not_transient(self):
+        self.assertFalse(has_transient_cause(ValueError("bad payload")))
+        wrapped = ResponsesStreamSourceError(
+            "iterator", ValueError("bad json")
+        )
+        self.assertFalse(has_transient_cause(wrapped))
 
 
 class MaskDisplayTests(unittest.TestCase):

@@ -1,7 +1,11 @@
 """Basic SpatialGeoGuesser upload app."""
 
 import asyncio
+import html
 import json
+import math
+import threading
+import time
 import urllib.request
 
 import pandas as pd
@@ -55,6 +59,15 @@ try:
 except ImportError:  # pragma: no cover
     st_folium = None
 
+try:
+    from streamlit.runtime.scriptrunner import (
+        add_script_run_ctx,
+        get_script_run_ctx,
+    )
+except ImportError:  # pragma: no cover
+    add_script_run_ctx = None
+    get_script_run_ctx = None
+
 NEON_ACCENT = "#00FFAA"
 METRIC_CARD_BACKGROUND = "#1E1E1E"
 
@@ -95,6 +108,147 @@ def show_centered_lottie(
             st_lottie(animation, height=240, key=key)
 
 
+SAM_WONDER_PROGRESS_MESSAGES = (
+    "SAM 3.1 is dissecting the image...",
+    "SAM 3.1 is acting like a detective...",
+    "Scanning the scene for infrastructural clues...",
+    "Segmenting the scene into a thousand puzzle pieces...",
+    "Searching for hidden regional artifacts and text...",
+    "Evaluating biome, vegetation, and topography...",
+    "Mapping shapes, edges, and spatial structure...",
+    "Reading light, color, and atmosphere...",
+    "Cataloguing every visible clue and pattern...",
+    "Muse Wonder is now working as Sherlock Holmes...",
+    "Cross-referencing global architectural patterns...",
+    "Triangulating position from every available cue...",
+    "Weighing natural versus built-environment signals...",
+    "Hunting for text, symbols, and regional markers...",
+    "Running multi-hypothesis spatial triangulation...",
+    "Eliminating false leads and impossible biomes...",
+    "Connecting the dots on a digital corkboard...",
+    "Playing a high-stakes game of AI GeoGuessr...",
+    "Piecing together the final coordinates...",
+    "Narrowing down the regional radius...",
+    "Zeroing in on the exact coordinates...",
+    "Locking onto the target grid...",
+    "Preparing the final spatial verdict...",
+)
+API_PROGRESS_TICK_SECONDS = 0.15
+API_PROGRESS_CAP = 95
+API_PROGRESS_ETA_SECONDS = 120.0
+API_PROGRESS_WRAP_UP_TEXT = "Wrapping up final deductions..."
+
+
+def simulate_smooth_progress(
+    stop_event,
+    status_slot,
+    progress_slot,
+    messages=SAM_WONDER_PROGRESS_MESSAGES,
+    tick_seconds: float = API_PROGRESS_TICK_SECONDS,
+    eta_slot=None,
+    duration_seconds: float = API_PROGRESS_ETA_SECONDS,
+) -> None:
+    """Fill the bar from 0% to 95% over the ETA window, then hold.
+
+    Percent, message, and countdown all derive from the same elapsed
+    timer: percent climbs linearly to API_PROGRESS_CAP across
+    duration_seconds, the message advances proportionally through the
+    array (no repeats until a full pass), and the ETA slot counts down
+    the remaining seconds. Past the window the bar holds at 95% with
+    the wrap-up text until the pipeline stops the thread, which then
+    snaps the bar to 100%. Runs on a daemon thread; all slots update
+    in place without a page reload.
+    """
+    total = len(messages)
+    if total == 0:
+        return
+    duration = max(float(duration_seconds), 0.001)
+    started = time.monotonic()
+    shown_eta = None
+    while not stop_event.is_set():
+        elapsed = time.monotonic() - started
+        if elapsed >= duration:
+            percent = API_PROGRESS_CAP
+            message = API_PROGRESS_WRAP_UP_TEXT
+        else:
+            percent = min(
+                API_PROGRESS_CAP, int(elapsed / duration * API_PROGRESS_CAP)
+            )
+            index = min(int(percent / API_PROGRESS_CAP * total), total - 1)
+            message = messages[index]
+        status_slot.markdown(
+            f'<div class="loading-text">'
+            f"{percent}% - {message}</div>",
+            unsafe_allow_html=True,
+        )
+        progress_slot.progress(percent)
+        if eta_slot is not None:
+            remaining = duration - elapsed
+            if remaining <= 0:
+                eta_text = API_PROGRESS_WRAP_UP_TEXT
+            else:
+                eta_text = (
+                    "Approximated time left: "
+                    f"{math.ceil(remaining)}s"
+                )
+            if eta_text != shown_eta:
+                shown_eta = eta_text
+                eta_slot.markdown(
+                    f'<div class="eta-text">{eta_text}</div>',
+                    unsafe_allow_html=True,
+                )
+        if stop_event.wait(tick_seconds):
+            break
+
+
+def start_analysis_loader(first_message: str):
+    """Initialize the bar at 0% and animate it over the ETA window.
+
+    Uses st.empty() placeholders so the text, bar, and countdown update
+    in place. Returns an opaque loader handle for stop_analysis_loader().
+    """
+    status_slot = st.empty()
+    progress_slot = st.empty()
+    eta_slot = st.empty()
+    status_slot.markdown(
+        f'<div class="loading-text">0% - {first_message}</div>',
+        unsafe_allow_html=True,
+    )
+    progress_slot.progress(0)
+    eta_slot.markdown(
+        '<div class="eta-text">Approximated time left: '
+        f"{math.ceil(API_PROGRESS_ETA_SECONDS)}s</div>",
+        unsafe_allow_html=True,
+    )
+    stop_event = threading.Event()
+    animator = threading.Thread(
+        target=simulate_smooth_progress,
+        args=(stop_event, status_slot, progress_slot),
+        kwargs={"eta_slot": eta_slot},
+        daemon=True,
+    )
+    if add_script_run_ctx is not None and get_script_run_ctx is not None:
+        ctx = get_script_run_ctx()
+        if ctx is not None:
+            try:
+                add_script_run_ctx(animator, ctx)
+            except Exception:
+                pass
+    animator.start()
+    return (stop_event, animator, status_slot, progress_slot, eta_slot)
+
+
+def stop_analysis_loader(loader) -> None:
+    """Stop the timer, snap the bar to 100%, and clear the loader."""
+    stop_event, animator, status_slot, progress_slot, eta_slot = loader
+    stop_event.set()
+    animator.join(timeout=3.0)
+    progress_slot.progress(100)
+    status_slot.empty()
+    progress_slot.empty()
+    eta_slot.empty()
+
+
 BACKGROUND_IMAGE_URL = (
     "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b"
     "?auto=format&fit=crop&w=2000&q=80"
@@ -120,13 +274,15 @@ h1, h2, .main-title {
     text-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
 }
 
-/* Frosted-glass surfaces so content stays readable over the backdrop. */
+/* Dark encapsulation layer: unified opaque container for the upload section. */
 div[data-testid="stVerticalBlockBorderWrapper"] > div {
-    background: rgba(15, 23, 42, 0.6) !important;
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid rgba(255, 255, 255, 0.12) !important;
-    border-radius: 16px;
+    background: rgba(10, 14, 26, 0.88) !important;
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.16) !important;
+    border-radius: 20px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45) !important;
+    padding: 1.75rem !important;
 }
 
 section[data-testid="stSidebar"] {
@@ -340,6 +496,25 @@ label[data-testid="stWidgetLabel"] {
     margin-bottom: 0.5rem !important;
 }
 
+/* Center "Upload a memory" / "Regional hint" titles above their inputs */
+div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stWidgetLabel"],
+div[data-testid="stVerticalBlockBorderWrapper"] label[data-testid="stWidgetLabel"] {
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    text-align: center !important;
+    width: 100% !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stWidgetLabel"] p,
+div[data-testid="stVerticalBlockBorderWrapper"] label[data-testid="stWidgetLabel"] p,
+div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stFileUploader"] label p,
+div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stTextInput"] label p {
+    text-align: center !important;
+    width: 100% !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+}
+
 /* Re-style Streamlit Native File Uploader Dropzone */
 div[data-testid="stFileUploader"] {
     margin-bottom: 1.5rem !important;
@@ -388,6 +563,39 @@ section[data-testid="stFileUploadDropzone"] button:hover {
 section[data-testid="stFileUploadDropzone"] button svg {
     fill: #ffffff !important;
     stroke: #ffffff !important;
+}
+
+/* Harden the dark button theme: kill any residual white fill, cover the
+   alternate dropzone testid spelling and focus/active states */
+div[data-testid="stFileUploader"] button,
+section[data-testid="stFileUploadDropzone"] button,
+section[data-testid="stFileUploaderDropzone"] button {
+    background-color: rgba(18, 18, 22, 0.9) !important;
+    background-image: none !important;
+    border: 1px solid rgba(255, 255, 255, 0.22) !important;
+    color: #ffffff !important;
+}
+
+div[data-testid="stFileUploader"] button:hover,
+section[data-testid="stFileUploaderDropzone"] button:hover,
+div[data-testid="stFileUploader"] button:focus,
+section[data-testid="stFileUploadDropzone"] button:focus,
+section[data-testid="stFileUploaderDropzone"] button:focus,
+div[data-testid="stFileUploader"] button:active,
+section[data-testid="stFileUploadDropzone"] button:active,
+section[data-testid="stFileUploaderDropzone"] button:active {
+    background: rgba(30, 30, 38, 0.95) !important;
+    background-color: rgba(30, 30, 38, 0.95) !important;
+    background-image: none !important;
+    border-color: rgba(255, 255, 255, 0.35) !important;
+    color: #ffffff !important;
+}
+
+div[data-testid="stFileUploader"] button svg,
+section[data-testid="stFileUploaderDropzone"] button svg {
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+    color: #ffffff !important;
 }
 
 /* Style dropzone background and secondary text */
@@ -454,6 +662,161 @@ div.stButton > button:hover {
     background: #ffffff !important;
     transform: translateY(-2px) scale(1.02) !important;
     box-shadow: 0 8px 25px rgba(255, 255, 255, 0.35) !important;
+}
+
+/* Gradient Pill Progress Bar */
+.stProgress > div > div > div > div {
+    background-image: linear-gradient(90deg, #ff5bd5 0%, #a25df5 50%, #5d8af5 100%) !important;
+    border-radius: 50px !important;
+}
+.stProgress > div > div > div {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    border-radius: 50px !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+/* Center the loading text above the progress bar */
+.loading-text {
+    text-align: center;
+    color: #ffffff;
+    font-weight: 600;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+    font-size: 1rem;
+}
+/* Approximated-time-left countdown beneath the progress bar */
+.eta-text {
+    text-align: center;
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 0.8rem;
+    letter-spacing: 0.5px;
+    margin-top: 8px;
+}
+
+/* Luxury result dashboard: unified dark glass wrapper */
+.result-glass {
+    background: rgba(10, 14, 26, 0.88);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 24px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    padding: 2.5rem 2rem;
+    max-width: 720px;
+    margin: 1.5rem auto;
+    text-align: center;
+}
+.result-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.3em;
+    font-size: 0.72rem;
+    color: rgba(255, 255, 255, 0.6);
+    margin-bottom: 0.75rem;
+}
+.result-location {
+    font-family: 'Cormorant Garamond', serif !important;
+    font-weight: 300;
+    font-size: 3rem;
+    line-height: 1.1;
+    color: #ffffff !important;
+    margin: 0 0 0.25rem 0;
+    text-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+.result-coords {
+    font-size: 0.9rem;
+    letter-spacing: 0.08em;
+    color: rgba(255, 255, 255, 0.65);
+    margin-bottom: 1.5rem;
+}
+.result-metrics {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.75rem;
+}
+.metric-mini-card {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 16px;
+    padding: 1rem 1.75rem;
+    min-width: 180px;
+}
+.metric-mini-card .metric-label {
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    font-size: 0.68rem;
+    color: rgba(255, 255, 255, 0.6);
+    margin-bottom: 0.35rem;
+}
+.metric-mini-card .metric-value {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: #ffffff;
+}
+.result-divider {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    margin: 0 auto 1.5rem auto;
+    max-width: 480px;
+}
+.deduction-title {
+    font-family: 'Cormorant Garamond', serif !important;
+    font-weight: 400;
+    font-size: 1.5rem;
+    color: #ffffff !important;
+    margin-bottom: 1.25rem;
+}
+.deduction-timeline {
+    list-style: none;
+    counter-reset: deduction;
+    margin: 0 auto;
+    padding: 0;
+    max-width: 560px;
+    text-align: left;
+}
+.deduction-timeline li {
+    counter-increment: deduction;
+    position: relative;
+    padding: 0 0 1.25rem 3rem;
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 0.95rem;
+    line-height: 1.55;
+}
+.deduction-timeline li:last-child {
+    padding-bottom: 0;
+}
+.deduction-timeline li::before {
+    content: counter(deduction);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    color: #ffffff;
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.deduction-timeline li::after {
+    content: "";
+    position: absolute;
+    left: 0.95rem;
+    top: 2.2rem;
+    bottom: 0.1rem;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.15);
+}
+.deduction-timeline li:last-child::after {
+    display: none;
+}
+.deduction-empty {
+    color: rgba(255, 255, 255, 0.5);
+    font-style: italic;
 }
 </style>
 """
@@ -545,8 +908,91 @@ def render_wonder_folium_map(result: dict) -> None:
     st_folium(fmap, height=WONDER_MAP_HEIGHT, use_container_width=True)
 
 
+def format_confidence(value) -> str:
+    """Format a 0-1 confidence score as a percentage string."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "Unknown"
+    return f"{value:.0%}"
+
+
+def format_coordinates(coordinates) -> str | None:
+    """Format a coordinates mapping as a compass-point string."""
+    if not isinstance(coordinates, dict):
+        return None
+    lat = coordinates.get("latitude")
+    lon = coordinates.get("longitude")
+    for value in (lat, lon):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+    lat_hemi = "N" if lat >= 0 else "S"
+    lon_hemi = "E" if lon >= 0 else "W"
+    return f"{abs(lat)}° {lat_hemi}, {abs(lon)}° {lon_hemi}"
+
+
+def render_result_dashboard(result: dict) -> None:
+    """Render the luxury glass dashboard for an analysis result."""
+    result = result or {}
+    city = (result.get("city") or "").strip()
+    country = (result.get("country") or "").strip()
+    location = ", ".join(part for part in (city, country) if part)
+    coords_text = format_coordinates(result.get("coordinates"))
+    if not location:
+        location = coords_text or "Location Identified"
+    coords_line = ""
+    if coords_text and coords_text != location:
+        coords_line = (
+            f'<p class="result-coords">{html.escape(coords_text)}</p>'
+        )
+    precision = result.get("precision") or result.get("precision_level")
+    if not precision:
+        precision = "Unknown"
+    confidence_value = result.get("confidence")
+    if confidence_value is None:
+        confidence_value = result.get("confidence_score")
+    confidence_text = html.escape(format_confidence(confidence_value))
+    steps = []
+    for step in result.get("reasoning_steps") or []:
+        if step is None:
+            continue
+        text = str(step).strip()
+        if text:
+            steps.append(text)
+    if steps:
+        items = "".join(
+            f"<li>{html.escape(step)}</li>" for step in steps
+        )
+        timeline = f'<ol class="deduction-timeline">{items}</ol>'
+    else:
+        timeline = (
+            '<p class="deduction-empty">No reasoning steps recorded.</p>'
+        )
+    st.markdown(
+        f"""
+        <div class="result-glass">
+            <p class="result-eyebrow">Spatial Verdict</p>
+            <h2 class="result-location">{html.escape(location)}</h2>
+            {coords_line}
+            <div class="result-metrics">
+                <div class="metric-mini-card">
+                    <p class="metric-label">Precision</p>
+                    <p class="metric-value">{html.escape(str(precision))}</p>
+                </div>
+                <div class="metric-mini-card">
+                    <p class="metric-label">Confidence</p>
+                    <p class="metric-value">{confidence_text}</p>
+                </div>
+            </div>
+            <hr class="result-divider" />
+            <h3 class="deduction-title">Detective&rsquo;s Deduction</h3>
+            {timeline}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_analysis_outcome(outcome: dict | None) -> None:
-    """Render a stored analysis outcome (result + map, or halt/error)."""
+    """Render a stored analysis outcome (dashboard + map, or halt/error)."""
     if not outcome:
         return
     kind = outcome.get("kind")
@@ -555,7 +1001,7 @@ def render_analysis_outcome(outcome: dict | None) -> None:
             st.success("Mock analysis complete (no backend call).")
         else:
             st.success("Analysis complete.")
-        st.json(outcome.get("result", {}))
+        render_result_dashboard(outcome.get("result", {}))
         render_result_map(outcome.get("result", {}))
     elif kind == "halt":
         st.warning(outcome.get("message", "Analysis halted."))
@@ -765,7 +1211,6 @@ def render_validation_badge(text: str) -> None:
             width: fit-content;
             box-shadow: 0 4px 20px rgba(34, 197, 94, 0.15);
         ">
-            <span style="font-size: 1.1rem;">✨</span>
             <span style="color: #4ade80; font-weight: 600; font-size: 0.9rem; letter-spacing: 0.02em;">
                 {text}
             </span>
@@ -902,21 +1347,24 @@ def render_home(developer_mode: bool = False) -> None:
             else "Analyzing memory..."
         )
         anim_slot = None
+        loader = None
         try:
-            anim_slot = st.empty()
+            # No unpopulated placeholder: only create the animation slot
+            # when an animation is actually available to render in it.
             if st_lottie is not None:
                 animation = load_lottie_animation()
                 if animation is not None:
+                    anim_slot = st.empty()
                     show_centered_lottie(anim_slot, animation)
-            with st.spinner(label):
-                if st.session_state.developer_mode:
-                    outcome = execute_analysis(
-                        uploaded_file, regional_hint, True
-                    )
-                else:
-                    outcome = execute_live_analysis_direct(
-                        uploaded_file, regional_hint
-                    )
+            loader = start_analysis_loader(label)
+            if st.session_state.developer_mode:
+                outcome = execute_analysis(
+                    uploaded_file, regional_hint, True
+                )
+            else:
+                outcome = execute_live_analysis_direct(
+                    uploaded_file, regional_hint
+                )
             st.session_state["analysis_outcome"] = outcome
         except Exception as exc:
             st.session_state["analysis_outcome"] = {
@@ -924,6 +1372,8 @@ def render_home(developer_mode: bool = False) -> None:
                 "message": f"Analysis failed unexpectedly: {exc}",
             }
         finally:
+            if loader is not None:
+                stop_analysis_loader(loader)
             if anim_slot is not None:
                 anim_slot.empty()
             st.session_state["analysis_pending"] = False

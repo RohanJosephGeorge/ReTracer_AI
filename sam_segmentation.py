@@ -35,6 +35,7 @@ from tenacity import (
 )
 from meta_sam_parser import (
     CompletedOutcome,
+    ResponsesStreamSourceError,
     SegmentationMaskRecord,
     decode_mask_to_raster,
     image_segmentation_format,
@@ -121,7 +122,36 @@ def get_meta_api_key(explicit: str | None = None) -> str:
 
 
 class SamRetryableError(SamApiError):
-    """Transient Meta API failure (HTTP 429/503/504); safe to retry."""
+    """Transient Meta API failure; safe to retry.
+
+    Covers HTTP 429/503/504 as well as dropped or timed-out
+    connections (including Windows socket faults such as WinError 121).
+    """
+
+
+TRANSIENT_NETWORK_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError, OSError)
+"""Transport failures worth retrying: drops, timeouts, socket faults."""
+
+
+def has_transient_cause(exc: BaseException) -> bool:
+    """True when the error or its wrapped cause is a transient fault.
+
+    The stream parser wraps source failures (e.g. a WinError 121 socket
+    drop mid-stream) while keeping the original error as its cause, so
+    walk a few links before giving up.
+    """
+    current: BaseException | None = exc
+    for _ in range(5):
+        if current is None:
+            return False
+        if isinstance(current, TRANSIENT_NETWORK_ERRORS):
+            return True
+        current = (
+            getattr(current, "cause", None)
+            or current.__cause__
+            or current.__context__
+        )
+    return False
 
 
 def make_retry_before_sleep(on_retry: Callable[[int, float], None] | None):
@@ -515,14 +545,27 @@ class SamSegmenter:
                         return await parsed.final_result()
                 except SamApiError:
                     raise
+                except ResponsesStreamSourceError as exc:
+                    if has_transient_cause(exc):
+                        raise SamRetryableError(
+                            f"SAM stream failed for concept {concept!r}: "
+                            f"{exc.cause or exc}"
+                        ) from exc
+                    raise SamApiError(
+                        f"SAM stream failed for concept {concept!r}: {exc}"
+                    ) from exc
+                except TRANSIENT_NETWORK_ERRORS as exc:
+                    raise SamRetryableError(
+                        f"SAM stream failed for concept {concept!r}: {exc}"
+                    ) from exc
                 except Exception as exc:
                     raise SamApiError(
                         f"SAM stream failed for concept {concept!r}: {exc}"
                     ) from exc
         except SamApiError:
             raise
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            raise SamApiError(f"SAM request failed: {exc}") from exc
+        except TRANSIENT_NETWORK_ERRORS as exc:
+            raise SamRetryableError(f"SAM request failed: {exc}") from exc
 
     async def segment_concept(
         self, image_data_url: str, concept: str
