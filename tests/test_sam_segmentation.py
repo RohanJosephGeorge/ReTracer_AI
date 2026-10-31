@@ -33,12 +33,16 @@ from tenacity import (
 )
 
 from sam_segmentation import (
+    DENSE_IMAGE_MESSAGE,
+    FALLBACK_MAX_LONG_EDGE,
     FOCUS_CONCEPTS,
     RETRY_STATUS_TEXT,
     SAM_RETRY_WAIT,
     SamApiError,
+    SamDenseImageError,
     SamRetryableError,
     SamSegmenter,
+    downscale_to_long_edge,
     draw_mask_boxes,
     has_transient_cause,
     select_latest_masks,
@@ -531,6 +535,97 @@ class MaskDisplayTests(unittest.TestCase):
         seg = SamSegmenter(api_key="k", session=session)
         with self.assertRaises(SamApiError):
             await seg.segment_image(gradient_png(), concepts="text")
+
+
+def large_rgb_image(width=2048, height=1024):
+    arr = np.zeros((height, width, 3), dtype=np.uint8)
+    arr[:, :, 0] = np.tile(
+        np.linspace(0, 255, width, dtype=np.uint8), (height, 1)
+    )
+    return Image.fromarray(arr, mode="RGB")
+
+
+def sent_image_size(call):
+    url = call["json"]["input"][0]["content"][1]["image_url"]
+    return Image.open(
+        io.BytesIO(base64.b64decode(url.split(",", 1)[1]))
+    ).size
+
+
+class GracefulDegradationTests(unittest.IsolatedAsyncioTestCase):
+    def test_fallback_long_edge_is_1024(self):
+        self.assertEqual(FALLBACK_MAX_LONG_EDGE, 1024)
+
+    def test_downscale_caps_long_edge_keeps_aspect_ratio(self):
+        wide = downscale_to_long_edge(large_rgb_image(2048, 1024))
+        self.assertEqual(wide.size, (1024, 512))
+        tall = downscale_to_long_edge(large_rgb_image(1024, 2048))
+        self.assertEqual(tall.size, (512, 1024))
+        small = downscale_to_long_edge(large_rgb_image(512, 256))
+        self.assertEqual(small.size, (512, 256))
+
+    def test_dense_error_is_sam_api_error(self):
+        self.assertTrue(issubclass(SamDenseImageError, SamApiError))
+
+    def test_dense_message_is_exact(self):
+        self.assertEqual(
+            DENSE_IMAGE_MESSAGE,
+            "The image is too dense for spatial processing. "
+            "Please try a different memory.",
+        )
+
+    async def test_500_retries_once_with_resized_image(self):
+        session = FakeSession(
+            [error_response(500), success_response()]
+        )
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        result = await seg.segment_image(
+            large_rgb_image(), concepts="text"
+        )
+        self.assertEqual(result["mask_count"], 1)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(sent_image_size(session.calls[0]), (2048, 1024))
+        self.assertEqual(sent_image_size(session.calls[1]), (1024, 512))
+
+    async def test_500_fallback_bytes_retries_resized(self):
+        buf = io.BytesIO()
+        large_rgb_image().save(buf, format="PNG")
+        session = FakeSession(
+            [error_response(500), success_response()]
+        )
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        result = await seg.segment_image(buf.getvalue(), concepts="text")
+        self.assertEqual(result["mask_count"], 1)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(sent_image_size(session.calls[0]), (2048, 1024))
+        self.assertEqual(sent_image_size(session.calls[1]), (1024, 512))
+
+    async def test_500_fallback_failure_raises_dense_message(self):
+        session = FakeSession(error_response(500))
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        with self.assertRaises(SamApiError) as ctx:
+            await seg.segment_image(
+                large_rgb_image(), concepts="text"
+            )
+        self.assertIn("too dense for spatial processing", str(ctx.exception))
+        self.assertEqual(len(session.calls), 2)
+
+    async def test_non_500_errors_never_trigger_fallback(self):
+        session = FakeSession(error_response(400))
+        seg = SamSegmenter(
+            api_key="k", session=session, retrying=fast_retrying()
+        )
+        with self.assertRaises(SamApiError):
+            await seg.segment_image(
+                large_rgb_image(), concepts="text"
+            )
+        self.assertEqual(len(session.calls), 1)
 
 
 if __name__ == "__main__":

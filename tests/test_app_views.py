@@ -42,9 +42,8 @@ class UploadFeedbackTests(unittest.TestCase):
             {
                 "dev_mode": False,
                 "developer_mode": False,
-                "is_processing": False,
-                "analysis_pending": False,
-                "analysis_outcome": None,
+                "is_analyzing": False,
+                "analysis_results": None,
                 "last_upload_key": None,
                 "screened_image": None,
                 "sam_result": None,
@@ -132,9 +131,8 @@ class UploadFeedbackTests(unittest.TestCase):
             {
                 "dev_mode": False,
                 "developer_mode": False,
-                "is_processing": False,
-                "analysis_pending": False,
-                "analysis_outcome": None,
+                "is_analyzing": False,
+                "analysis_results": None,
                 "last_upload_key": None,
                 "screened_image": None,
                 "sam_result": None,

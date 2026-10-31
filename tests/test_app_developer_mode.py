@@ -27,9 +27,8 @@ def base_state(**overrides):
     state = StateDict(
         {
             "developer_mode": True,
-            "is_processing": False,
-            "analysis_pending": False,
-            "analysis_outcome": None,
+            "is_analyzing": False,
+            "analysis_results": None,
             "last_upload_key": None,
             "screened_image": None,
             "sam_result": None,
@@ -41,7 +40,7 @@ def base_state(**overrides):
 
 
 class DeveloperModeToggleTests(unittest.TestCase):
-    def run_pending_analysis(self, state, param):
+    def run_armed_analysis(self, state, param):
         mock_st = MagicMock()
         mock_st.session_state = state
         mock_st.file_uploader.return_value = None
@@ -61,27 +60,20 @@ class DeveloperModeToggleTests(unittest.TestCase):
             patch.object(app, "execute_analysis", execute),
             patch.object(app, "execute_live_analysis_direct", direct),
             patch.object(app, "load_lottie_animation", return_value=None),
+            patch("time.sleep"),
         ):
             app.render_home(developer_mode=param)
         return execute, direct
 
     def test_session_state_false_overrides_stale_true_param(self):
-        state = base_state(
-            developer_mode=False,
-            is_processing=True,
-            analysis_pending=True,
-        )
-        execute, direct = self.run_pending_analysis(state, param=True)
+        state = base_state(developer_mode=False, is_analyzing=True)
+        execute, direct = self.run_armed_analysis(state, param=True)
         execute.assert_not_called()
         direct.assert_called_once()
 
     def test_session_state_true_overrides_stale_false_param(self):
-        state = base_state(
-            developer_mode=True,
-            is_processing=True,
-            analysis_pending=True,
-        )
-        execute, direct = self.run_pending_analysis(state, param=False)
+        state = base_state(developer_mode=True, is_analyzing=True)
+        execute, direct = self.run_armed_analysis(state, param=False)
         execute.assert_called_once()
         passed_flag = execute.call_args.args[2]
         self.assertTrue(passed_flag)
@@ -123,6 +115,7 @@ class SingleButtonFlowTests(unittest.TestCase):
             size="lg",
             width="stretch",
             disabled=False,
+            on_click=app.start_analysis,
         )
 
 

@@ -97,10 +97,25 @@ RETRYABLE_STATUS_CODES = frozenset({429, 503, 504})
 SAM_MAX_ATTEMPTS = 3  # Initial try plus up to 2 retries.
 SAM_RETRY_WAIT = wait_exponential(multiplier=2, max=10)  # 2s, then 4s.
 RETRY_STATUS_TEXT = "API congested, retrying..."
+FALLBACK_MAX_LONG_EDGE = 1024
+DENSE_IMAGE_MESSAGE = (
+    "The image is too dense for spatial processing. "
+    "Please try a different memory."
+)
 
 
 class SamApiError(Exception):
     """Any failure calling Meta Model API or decoding its masks."""
+
+
+class SamDenseImageError(SamApiError):
+    """HTTP 500 from SAM: payload too large for server-side processing.
+
+    Raised on the first 500 so segment_image() can retry once with a
+    downscaled fallback; raised with DENSE_IMAGE_MESSAGE when that
+    fallback also fails, so the UI shows a friendly message instead
+    of the raw server error body.
+    """
 
 
 def get_meta_api_key(explicit: str | None = None) -> str:
@@ -195,6 +210,39 @@ def encode_png_bytes(image: Image.Image) -> bytes:
     buf = io.BytesIO()
     image.convert("RGB").save(buf, format="PNG")
     return buf.getvalue()
+
+
+def downscale_to_long_edge(
+    image: Image.Image, max_edge: int = FALLBACK_MAX_LONG_EDGE
+) -> Image.Image:
+    """Return a copy with the longest edge capped at max_edge.
+
+    Aspect ratio is strictly preserved; images already at or below
+    max_edge are returned as an unmodified copy.
+    """
+    width, height = image.size
+    longest = max(width, height)
+    if longest <= max_edge or longest == 0:
+        return image.copy()
+    scale = max_edge / longest
+    new_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    return image.resize(new_size, Image.LANCZOS)
+
+
+def encode_fallback_data_url(image: Image.Image | bytes) -> str:
+    """Build a base64 data URL with the longest edge capped at 1024px.
+
+    Accepts the same PIL-or-bytes input as segment_image(); the
+    fallback is always re-encoded as PNG.
+    """
+    if isinstance(image, Image.Image):
+        resized = downscale_to_long_edge(image)
+    else:
+        with Image.open(io.BytesIO(bytes(image))) as opened:
+            opened.load()
+            resized = downscale_to_long_edge(opened.convert("RGB"))
+    data = encode_png_bytes(resized)
+    return f"data:image/png;base64,{base64.b64encode(data).decode('ascii')}"
 
 
 def select_latest_masks(records: Sequence) -> list:
@@ -436,7 +484,8 @@ class SamSegmenter:
 
     One API request is issued per concept phrase (the documented contract
     takes a single coherent phrase per request); independent concepts run
-    concurrently. Images are always sent at full resolution.
+    concurrently. Images are first sent at full resolution; on HTTP 500
+    the batch is retried once with the longest edge capped at 1024px.
     """
 
     def __init__(
@@ -535,6 +584,8 @@ class SamSegmenter:
                     )
                     if response.status in RETRYABLE_STATUS_CODES:
                         raise SamRetryableError(message)
+                    if response.status == 500:
+                        raise SamDenseImageError(message)
                     raise SamApiError(message)
                 try:
                     parsed = parse_responses_stream(
@@ -628,6 +679,13 @@ class SamSegmenter:
     ) -> dict:
         """Segment the full-resolution image for each concept, concurrently.
 
+        The first attempt always sends the original uncompressed payload
+        for maximum resolution. On HTTP 500 (server-side OOM on dense
+        payloads) the request is retried once with the image downscaled
+        so its longest edge is capped at 1024px; if that also fails a
+        SamDenseImageError with DENSE_IMAGE_MESSAGE is raised instead
+        of the raw server error body.
+
         Returns {"model", "concepts", "mask_count", "masks"} with one mask
         dict per decoded mask, each tagged with its concept phrase. Rasters
         are row-major bytes of 0/1 with exactly width*height entries.
@@ -646,21 +704,39 @@ class SamSegmenter:
         data_url = (
             f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
         )
-        semaphore = asyncio.Semaphore(self._max_concurrency)
 
-        async def one(concept: str):
-            async with semaphore:
-                return concept, await self.segment_concept(data_url, concept)
+        async def run_all(url: str) -> dict:
+            semaphore = asyncio.Semaphore(self._max_concurrency)
 
-        masks: list[dict] = []
-        for concept, found in await asyncio.gather(
-            *(one(concept) for concept in concepts)
-        ):
-            for mask in found:
-                masks.append({"concept": concept, **mask})
-        return {
-            "model": self._model,
-            "concepts": list(concepts),
-            "mask_count": len(masks),
-            "masks": masks,
-        }
+            async def one(concept: str):
+                async with semaphore:
+                    return concept, await self.segment_concept(url, concept)
+
+            masks: list[dict] = []
+            for concept, found in await asyncio.gather(
+                *(one(concept) for concept in concepts)
+            ):
+                for mask in found:
+                    masks.append({"concept": concept, **mask})
+            return {
+                "model": self._model,
+                "concepts": list(concepts),
+                "mask_count": len(masks),
+                "masks": masks,
+            }
+
+        try:
+            return await run_all(data_url)
+        except SamDenseImageError:
+            try:
+                fallback_url = await asyncio.to_thread(
+                    encode_fallback_data_url, image
+                )
+            except SamDenseImageError:
+                raise
+            except Exception as exc:
+                raise SamDenseImageError(DENSE_IMAGE_MESSAGE) from exc
+            try:
+                return await run_all(fallback_url)
+            except SamApiError as exc:
+                raise SamDenseImageError(DENSE_IMAGE_MESSAGE) from exc

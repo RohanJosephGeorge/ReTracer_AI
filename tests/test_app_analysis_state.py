@@ -1,4 +1,4 @@
-"""Tests that the Analyze flow always unlocks the UI, even on errors.
+"""Tests that the Analyze lock always unlocks the UI, even on errors.
 
 Run: python -m unittest discover -s tests -v
 Requires streamlit and pandas. Streamlit is mocked: no browser.
@@ -27,9 +27,8 @@ def home_state(**overrides):
     state = StateDict(
         {
             "developer_mode": True,
-            "is_processing": True,
-            "analysis_pending": True,
-            "analysis_outcome": None,
+            "is_analyzing": True,
+            "analysis_results": None,
             "last_upload_key": None,
             "screened_image": None,
             "sam_result": None,
@@ -40,17 +39,20 @@ def home_state(**overrides):
     return state
 
 
-def run_home(state, execute):
+def run_armed_home(state, execute):
     mock_st = MagicMock()
     mock_st.session_state = state
     mock_st.file_uploader.return_value = None
     mock_st.text_input.return_value = ""
     mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
+    mock_ui = MagicMock()
+    mock_ui.button.return_value = False
     with (
         patch.object(app, "st", mock_st),
-        patch.object(app, "ui", MagicMock()),
+        patch.object(app, "ui", mock_ui),
         patch.object(app, "execute_analysis", execute),
         patch.object(app, "load_lottie_animation", return_value=None),
+        patch("time.sleep"),
     ):
         app.render_home(developer_mode=True)
     return mock_st
@@ -62,24 +64,22 @@ class AnalysisUnlockTests(unittest.TestCase):
             raise RuntimeError("mock backend exploded")
 
         state = home_state()
-        mock_st = run_home(state, boom)
-        self.assertFalse(state["is_processing"])
-        self.assertFalse(state["analysis_pending"])
-        self.assertEqual(state["analysis_outcome"]["kind"], "error")
+        mock_st = run_armed_home(state, boom)
+        self.assertFalse(state["is_analyzing"])
+        self.assertEqual(state["analysis_results"]["kind"], "error")
         self.assertIn(
-            "mock backend exploded", state["analysis_outcome"]["message"]
+            "mock backend exploded", state["analysis_results"]["message"]
         )
         mock_st.error.assert_called_once_with(
-            state["analysis_outcome"]["message"]
+            state["analysis_results"]["message"]
         )
 
     def test_success_unlocks_and_stores_outcome(self):
         outcome = {"kind": "ok", "mock": True, "result": {"coordinates": {}}}
         state = home_state()
-        run_home(state, MagicMock(return_value=outcome))
-        self.assertFalse(state["is_processing"])
-        self.assertFalse(state["analysis_pending"])
-        self.assertIs(state["analysis_outcome"], outcome)
+        run_armed_home(state, MagicMock(return_value=outcome))
+        self.assertFalse(state["is_analyzing"])
+        self.assertIs(state["analysis_results"], outcome)
 
 
 if __name__ == "__main__":

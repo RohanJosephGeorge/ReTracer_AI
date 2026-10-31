@@ -1,13 +1,11 @@
-"""Tests for the timer-driven analysis loader (bar, text, countdown).
+"""Tests for the event-driven analysis progress (milestones, bar, text).
 
 Run: python -m unittest discover -s tests -v
 Requires streamlit and pandas. Streamlit is mocked: no browser.
 """
 
-import threading
-import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import app
 
@@ -15,7 +13,11 @@ import app
 class LoaderCssTests(unittest.TestCase):
     def test_progress_bar_gradient_styles(self):
         self.assertIn(
-            ".stProgress > div > div > div > div {", app.CUSTOM_CSS
+            'div[data-testid="stProgressBar"] > div {', app.CUSTOM_CSS
+        )
+        self.assertIn(
+            'div[data-testid="stProgressBar"] > div > div {',
+            app.CUSTOM_CSS,
         )
         self.assertIn(
             "linear-gradient(90deg, #ff5bd5 0%, #a25df5 50%, #5d8af5 100%)",
@@ -27,289 +29,416 @@ class LoaderCssTests(unittest.TestCase):
         self.assertIn(".loading-text {", app.CUSTOM_CSS)
         self.assertIn("letter-spacing: 1px", app.CUSTOM_CSS)
 
-    def test_eta_text_style(self):
-        self.assertIn(".eta-text {", app.CUSTOM_CSS)
-        self.assertIn("color: rgba(255, 255, 255, 0.55)", app.CUSTOM_CSS)
-        self.assertIn("font-size: 0.8rem", app.CUSTOM_CSS)
+    def test_scan_fallback_style(self):
+        self.assertIn(".scan-radar", app.CUSTOM_CSS)
+        self.assertIn("@keyframes scan-spin", app.CUSTOM_CSS)
+        self.assertIn("conic-gradient", app.CUSTOM_CSS)
+        self.assertIn("prefers-reduced-motion", app.CUSTOM_CSS)
+        self.assertIn("#000", app.CUSTOM_CSS)
+        self.assertIn("repeating-radial-gradient", app.CUSTOM_CSS)
 
 
-class ProgressScriptTests(unittest.TestCase):
-    def test_detective_script_has_23_unique_messages(self):
-        self.assertEqual(len(app.SAM_WONDER_PROGRESS_MESSAGES), 23)
-        self.assertEqual(len(set(app.SAM_WONDER_PROGRESS_MESSAGES)), 23)
-
-    def test_universal_action_phrasing_present(self):
-        for line in (
-            "Scanning the scene for infrastructural clues...",
-            "Evaluating biome, vegetation, and topography...",
-            "Searching for hidden regional artifacts and text...",
-            "Cross-referencing global architectural patterns...",
-        ):
-            self.assertIn(line, app.SAM_WONDER_PROGRESS_MESSAGES)
-
-    def test_messages_assume_no_specific_features(self):
-        banned = (
-            "utility pole",
-            "power line",
-            "license plate",
-            "street sign",
-            "roofline",
-            "soil composition",
-            "traffic marking",
-            "shadow vector",
-            "solar angle",
+class MilestoneConstantTests(unittest.TestCase):
+    def test_milestone_values_match_spec(self):
+        self.assertEqual(
+            app.MILESTONE_INIT, (0, "Initializing spatial analysis...")
         )
-        for message in app.SAM_WONDER_PROGRESS_MESSAGES:
-            lowered = message.lower()
-            for phrase in banned:
-                self.assertNotIn(phrase, lowered)
-
-    def test_message_pace_is_five_to_seven_seconds(self):
-        dwell = app.API_PROGRESS_ETA_SECONDS / len(
-            app.SAM_WONDER_PROGRESS_MESSAGES
+        self.assertEqual(
+            app.MILESTONE_SAM,
+            (5, "Segmenting image and extracting infrastructural clues..."),
         )
-        self.assertGreaterEqual(dwell, 5)
-        self.assertLessEqual(dwell, 7)
-
-
-def shown_texts(status_slot):
-    return [
-        call[0][0]
-        .replace('<div class="loading-text">', "")
-        .replace("</div>", "")
-        for call in status_slot.markdown.call_args_list
-    ]
-
-
-def shown_message_runs(status_slot):
-    """Message parts with consecutive duplicates collapsed."""
-    messages = [text.split(" - ", 1)[1] for text in shown_texts(status_slot)]
-    return [
-        message
-        for i, message in enumerate(messages)
-        if i == 0 or message != messages[i - 1]
-    ]
-
-
-def shown_percents(status_slot):
-    return [
-        int(text.split("%", 1)[0]) for text in shown_texts(status_slot)
-    ]
-
-
-def shown_eta_texts(eta_slot):
-    return [
-        call[0][0]
-        .replace('<div class="eta-text">', "")
-        .replace("</div>", "")
-        for call in eta_slot.markdown.call_args_list
-    ]
-
-
-class SimulateProgressTests(unittest.TestCase):
-    def run_animator(
-        self, messages, duration_seconds, until, timeout=8.0
-    ):
-        stop_event = threading.Event()
-        status_slot = MagicMock()
-        progress_slot = MagicMock()
-        thread = threading.Thread(
-            target=app.simulate_smooth_progress,
-            args=(stop_event, status_slot, progress_slot, messages),
-            kwargs={
-                "tick_seconds": 0.005,
-                "duration_seconds": duration_seconds,
-            },
-            daemon=True,
-        )
-        thread.start()
-        deadline = time.time() + timeout
-        while (
-            not until(status_slot, progress_slot)
-            and time.time() < deadline
-        ):
-            time.sleep(0.02)
-        stop_event.set()
-        thread.join(timeout=3.0)
-        self.assertFalse(thread.is_alive())
-        return status_slot, progress_slot
-
-    def test_fills_zero_to_95_over_duration(self):
-        _, progress_slot = self.run_animator(
-            ("M1", "M2", "M3", "M4"),
-            2.0,
-            lambda status, progress: (
-                progress.progress.call_args_list
-                and progress.progress.call_args_list[-1][0][0] >= 95
+        self.assertEqual(
+            app.MILESTONE_WONDER,
+            (
+                45,
+                "Cross-referencing biomes, architecture, and "
+                "topography...",
             ),
         )
-        progresses = [
-            call[0][0] for call in progress_slot.progress.call_args_list
-        ]
-        self.assertEqual(progresses[0], 0)
-        self.assertTrue(
-            all(a <= b for a, b in zip(progresses, progresses[1:]))
+        self.assertEqual(app.MILESTONE_DONE, (100, "Analysis complete."))
+        self.assertEqual(app.COMPLETION_HOLD_SECONDS, 0.5)
+        self.assertEqual(app.SAM_PROGRESS_TICK_SECONDS, 2.0)
+        self.assertEqual(app.SAM_PROGRESS_TICK_MAX_STEP, 3)
+        self.assertEqual(app.SAM_PROGRESS_CAP, 44)
+        self.assertEqual(app.WONDER_PROGRESS_TICK_SECONDS, 2.0)
+        self.assertEqual(app.WONDER_PROGRESS_TICK_MAX_STEP, 3)
+        self.assertEqual(app.WONDER_PROGRESS_CAP, 95)
+        self.assertEqual(
+            app.MILESTONE_WONDER_DONE,
+            (
+                95,
+                "Cross-referencing biomes, architecture, and "
+                "topography...",
+            ),
         )
-        self.assertEqual(max(progresses), 95)
-        self.assertEqual(progresses[-1], 95)
+        self.assertEqual(len(app.SAM_TICK_MESSAGES), 9)
+        self.assertEqual(
+            app.SAM_TICK_MESSAGES[0], "SAM 3.1 is dissecting the image..."
+        )
+        self.assertEqual(
+            app.SAM_TICK_MESSAGES[-1],
+            "Cataloguing every visible clue and pattern...",
+        )
+        self.assertEqual(len(app.WONDER_TICK_MESSAGES), 14)
+        self.assertEqual(
+            app.WONDER_TICK_MESSAGES[0],
+            "Muse Wonder is now working as Sherlock Holmes...",
+        )
+        self.assertEqual(
+            app.WONDER_TICK_MESSAGES[-1],
+            "Preparing the final spatial verdict...",
+        )
 
-    def test_messages_advance_proportionally_without_repeats(self):
-        status_slot, _ = self.run_animator(
-            ("M1", "M2", "M3", "M4"),
-            1.0,
-            lambda status, progress: "Wrapping up"
-            in "".join(shown_texts(status)),
-        )
-        runs = shown_message_runs(status_slot)
-        self.assertEqual(runs[:4], ["M1", "M2", "M3", "M4"])
-        self.assertEqual(runs[4], app.API_PROGRESS_WRAP_UP_TEXT)
-
-    def test_holds_95_with_wrap_up_past_deadline(self):
-        stop_event = threading.Event()
-        status_slot = MagicMock()
-        progress_slot = MagicMock()
-        thread = threading.Thread(
-            target=app.simulate_smooth_progress,
-            args=(stop_event, status_slot, progress_slot, ("M1", "M2")),
-            kwargs={"tick_seconds": 0.005, "duration_seconds": 0.4},
-            daemon=True,
-        )
-        thread.start()
-        deadline = time.time() + 5.0
-        while (
-            "Wrapping up" not in "".join(shown_texts(status_slot))
-            and time.time() < deadline
+    def test_timer_loader_is_gone(self):
+        for name in (
+            "simulate_smooth_progress",
+            "start_analysis_loader",
+            "stop_analysis_loader",
+            "SAM_WONDER_PROGRESS_MESSAGES",
+            "API_PROGRESS_TICK_SECONDS",
+            "API_PROGRESS_CAP",
+            "API_PROGRESS_ETA_SECONDS",
+            "API_PROGRESS_WRAP_UP_TEXT",
         ):
-            time.sleep(0.02)
-        time.sleep(0.3)
-        stop_event.set()
-        thread.join(timeout=3.0)
-        self.assertFalse(thread.is_alive())
-        progresses = [
-            call[0][0] for call in progress_slot.progress.call_args_list
-        ]
-        self.assertEqual(max(progresses), 95)
-        self.assertTrue(all(p == 95 for p in progresses[-5:]))
-        runs = shown_message_runs(status_slot)
-        first_hold = runs.index(app.API_PROGRESS_WRAP_UP_TEXT)
-        self.assertTrue(
-            all(
-                text == app.API_PROGRESS_WRAP_UP_TEXT
-                for text in runs[first_hold:]
-            )
-        )
+            self.assertFalse(hasattr(app, name), name)
+        self.assertNotIn("eta-text", app.CUSTOM_CSS)
+        self.assertNotIn("Approximated time left", app.CUSTOM_CSS)
 
-    def test_displayed_percent_matches_bar_tick_for_tick(self):
-        status_slot, progress_slot = self.run_animator(
-            ("M1", "M2"),
-            0.5,
-            lambda status, progress: len(progress.progress.call_args_list)
-            >= 20,
-        )
-        progresses = [
-            call[0][0] for call in progress_slot.progress.call_args_list
-        ]
-        self.assertEqual(shown_percents(status_slot), progresses)
 
-    def test_empty_messages_return_immediately(self):
-        stop_event = threading.Event()
+class ReportMilestoneTests(unittest.TestCase):
+    def test_updates_text_and_bar_together(self):
         status_slot = MagicMock()
-        progress_slot = MagicMock()
-        app.simulate_smooth_progress(
-            stop_event,
+        progress_bar = MagicMock()
+        app.report_analysis_milestone(
             status_slot,
-            progress_slot,
-            (),
-            tick_seconds=0.001,
-            duration_seconds=0.001,
+            progress_bar,
+            35,
+            "Segmenting image and extracting infrastructural clues...",
         )
-        status_slot.markdown.assert_not_called()
-        progress_slot.progress.assert_not_called()
+        html = status_slot.markdown.call_args_list[0][0][0]
+        self.assertIn(
+            "35% - Segmenting image and extracting infrastructural "
+            "clues...",
+            html,
+        )
+        self.assertIn('class="loading-text"', html)
+        progress_bar.progress.assert_called_once_with(35)
 
 
-class CountdownTimerTests(unittest.TestCase):
-    def run_animator(self, duration_seconds, until, timeout=8.0):
-        stop_event = threading.Event()
-        status_slot = MagicMock()
-        progress_slot = MagicMock()
-        eta_slot = MagicMock()
-        thread = threading.Thread(
-            target=app.simulate_smooth_progress,
-            args=(stop_event, status_slot, progress_slot, ("M",)),
-            kwargs={
-                "tick_seconds": 0.005,
-                "eta_slot": eta_slot,
-                "duration_seconds": duration_seconds,
-            },
-            daemon=True,
-        )
-        thread.start()
-        deadline = time.time() + timeout
-        while not until(eta_slot) and time.time() < deadline:
-            time.sleep(0.02)
-        stop_event.set()
-        thread.join(timeout=3.0)
-        self.assertFalse(thread.is_alive())
-        return eta_slot
+class StubFuture:
+    """concurrent.futures.Future stand-in with scripted done() flips."""
 
-    def test_countdown_decreases_then_wraps_up(self):
-        eta_slot = self.run_animator(
-            2.0,
-            lambda slot: "Wrapping up" in "".join(shown_eta_texts(slot)),
+    def __init__(self, done_flags, result=None, error=None):
+        self._done_flags = list(done_flags)
+        self._result = result
+        self._error = error
+
+    def done(self):
+        if len(self._done_flags) > 1:
+            return self._done_flags.pop(0)
+        return self._done_flags[0]
+
+    def result(self):
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+def make_executor_factory(futures, calls):
+    """ThreadPoolExecutor stand-in dispensing one canned future per pool."""
+
+    class FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            calls.setdefault("inits", []).append((args, kwargs))
+            self._future = futures[len(calls["inits"]) - 1]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            calls.setdefault("closed", []).append(True)
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            calls.setdefault("submits", []).append((fn, args, kwargs))
+            return self._future
+
+    return FakeExecutor
+
+
+class AwaitSamFutureTests(unittest.TestCase):
+    def test_completed_future_paints_nothing(self):
+        progress = MagicMock()
+        with patch("time.sleep") as mock_sleep:
+            result = app._await_sam_future(
+                StubFuture([True], result=["mask"]), progress
+            )
+        self.assertEqual(result, ["mask"])
+        mock_sleep.assert_not_called()
+        progress.assert_not_called()
+
+    def test_slow_future_ticks_random_amounts_on_interval(self):
+        events = []
+
+        def on_progress(percent, message):
+            events.append((percent, message))
+
+        with (
+            patch("time.sleep") as mock_sleep,
+            patch.object(
+                app.random, "randint", side_effect=[2, 1]
+            ) as mock_rand,
+        ):
+            result = app._await_sam_future(
+                StubFuture(
+                    [False, False, False, False, True], result=["mask"]
+                ),
+                on_progress,
+            )
+        self.assertEqual(result, ["mask"])
+        self.assertEqual(mock_sleep.call_args_list, [call(2.0)] * 2)
+        self.assertEqual(
+            mock_rand.call_args_list, [call(1, 3), call(1, 3)]
         )
-        texts = shown_eta_texts(eta_slot)
-        self.assertEqual(texts[-1], "Wrapping up final deductions...")
-        countdowns = [
-            text for text in texts if "Approximated time left" in text
+        self.assertEqual(
+            events,
+            [
+                (7, "SAM 3.1 is dissecting the image..."),
+                (8, "SAM 3.1 is acting like a detective..."),
+            ],
+        )
+
+    def test_ticks_hold_below_wonder_milestone(self):
+        events = []
+
+        def on_progress(percent, message):
+            events.append((percent, message))
+
+        with (
+            patch("time.sleep"),
+            patch.object(app.random, "randint", return_value=1),
+        ):
+            app._await_sam_future(
+                StubFuture([False] * 80 + [True], result=["mask"]),
+                on_progress,
+            )
+        expected_messages = [
+            app.SAM_TICK_MESSAGES[i % len(app.SAM_TICK_MESSAGES)]
+            for i in range(39)
         ]
-        self.assertGreaterEqual(len(countdowns), 1)
-        seconds = [
-            int(text.rsplit(" ", 1)[1].rstrip("s")) for text in countdowns
+        self.assertEqual(
+            events, list(zip(range(6, 45), expected_messages))
+        )
+
+    def test_large_steps_clamp_to_cap(self):
+        events = []
+
+        def on_progress(percent, message):
+            events.append((percent, message))
+
+        with (
+            patch("time.sleep"),
+            patch.object(app.random, "randint", return_value=2),
+        ):
+            app._await_sam_future(
+                StubFuture([False] * 45 + [True], result=["mask"]),
+                on_progress,
+            )
+        percents = list(range(7, 44, 2)) + [44]
+        expected_messages = [
+            app.SAM_TICK_MESSAGES[i % len(app.SAM_TICK_MESSAGES)]
+            for i in range(len(percents))
         ]
-        self.assertTrue(all(s > 0 for s in seconds))
-        self.assertTrue(
-            all(a > b for a, b in zip(seconds, seconds[1:]))
+        self.assertEqual(events, list(zip(percents, expected_messages)))
+
+    def test_worker_error_propagates_without_paints(self):
+        from sam_segmentation import SamApiError
+
+        progress = MagicMock()
+        with patch("time.sleep"):
+            with self.assertRaises(SamApiError):
+                app._await_sam_future(
+                    StubFuture([True], error=SamApiError("down")),
+                    progress,
+                )
+        progress.assert_not_called()
+
+    def test_none_observer_waits_without_polling(self):
+        with patch("time.sleep") as mock_sleep:
+            result = app._await_sam_future(
+                StubFuture([False, False, True], result=["mask"]), None
+            )
+        self.assertEqual(result, ["mask"])
+        mock_sleep.assert_not_called()
+
+
+class AwaitWonderFutureTests(unittest.TestCase):
+    def test_completed_future_paints_nothing(self):
+        progress = MagicMock()
+        with patch("time.sleep") as mock_sleep:
+            result = app._await_wonder_future(
+                StubFuture([True], result={"ok": True}), progress
+            )
+        self.assertEqual(result, {"ok": True})
+        mock_sleep.assert_not_called()
+        progress.assert_not_called()
+
+    def test_slow_future_ticks_random_amounts_on_interval(self):
+        events = []
+
+        def on_progress(percent, message):
+            events.append((percent, message))
+
+        with (
+            patch("time.sleep") as mock_sleep,
+            patch.object(
+                app.random, "randint", side_effect=[2, 1]
+            ) as mock_rand,
+        ):
+            result = app._await_wonder_future(
+                StubFuture(
+                    [False, False, False, False, True],
+                    result={"ok": True},
+                ),
+                on_progress,
+            )
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(mock_sleep.call_args_list, [call(2.0)] * 2)
+        self.assertEqual(
+            mock_rand.call_args_list, [call(1, 3), call(1, 3)]
         )
-        for text in texts:
-            self.assertNotIn("-", text)
-
-    def test_wrap_up_replaces_countdown_without_negatives(self):
-        eta_slot = self.run_animator(
-            0.3,
-            lambda slot: "Wrapping up" in "".join(shown_eta_texts(slot)),
-            timeout=5.0,
+        self.assertEqual(
+            events,
+            [
+                (47, "Muse Wonder is now working as Sherlock Holmes..."),
+                (48, "Cross-referencing global architectural patterns..."),
+            ],
         )
-        texts = shown_eta_texts(eta_slot)
-        self.assertEqual(texts[-1], "Wrapping up final deductions...")
-        for text in texts:
-            self.assertNotIn("-", text)
+
+    def test_tick_messages_wrap_around_pool(self):
+        events = []
+
+        def on_progress(percent, message):
+            events.append((percent, message))
+
+        with (
+            patch("time.sleep"),
+            patch.object(app.random, "randint", return_value=1),
+        ):
+            app._await_wonder_future(
+                StubFuture([False] * 32 + [True], result={"ok": True}),
+                on_progress,
+            )
+        expected_messages = list(app.WONDER_TICK_MESSAGES[:14]) + list(
+            app.WONDER_TICK_MESSAGES[:2]
+        )
+        self.assertEqual(
+            events, list(zip(range(46, 62), expected_messages))
+        )
+
+    def test_ticks_hold_at_wonder_cap(self):
+        events = []
+
+        def on_progress(percent, message):
+            events.append(percent)
+
+        with (
+            patch("time.sleep"),
+            patch.object(app.random, "randint", return_value=1),
+        ):
+            app._await_wonder_future(
+                StubFuture([False] * 120 + [True], result={"ok": True}),
+                on_progress,
+            )
+        self.assertEqual(events, list(range(46, 96)))
 
 
-class LoaderLifecycleTests(unittest.TestCase):
-    def test_start_stop_round_trip_with_mocked_streamlit(self):
-        mock_st = MagicMock()
-        status_slot = MagicMock()
-        progress_slot = MagicMock()
-        eta_slot = MagicMock()
-        mock_st.empty.side_effect = [status_slot, progress_slot, eta_slot]
-        with patch.object(app, "st", mock_st):
-            loader = app.start_analysis_loader("Analyzing memory...")
-            _, animator, _, _, _ = loader
-            self.assertTrue(animator.is_alive())
-            app.stop_analysis_loader(loader)
-        self.assertFalse(animator.is_alive())
-        self.assertEqual(mock_st.empty.call_count, 3)
-        mock_st.progress.assert_not_called()
-        first_html = status_slot.markdown.call_args_list[0][0][0]
-        self.assertIn("0% - Analyzing memory...", first_html)
-        first_progress = progress_slot.progress.call_args_list[0][0][0]
-        self.assertEqual(first_progress, 0)
-        first_eta = eta_slot.markdown.call_args_list[0][0][0]
-        self.assertIn("Approximated time left: 120s", first_eta)
-        progress_slot.progress.assert_called_with(100)
-        status_slot.empty.assert_called_once_with()
-        progress_slot.empty.assert_called_once_with()
-        eta_slot.empty.assert_called_once_with()
+class LivePipelineSyncTests(unittest.TestCase):
+    def run_pipeline(self, sam_done_flags, wonder_done_flags):
+        events = []
+
+        def on_progress(percent, message):
+            events.append((percent, message))
+
+        calls = {}
+        retry = object()
+        safe_image = MagicMock()
+        wonder_result = {"latitude": 1.0, "longitude": 2.0}
+        with (
+            patch.object(
+                app,
+                "ThreadPoolExecutor",
+                make_executor_factory(
+                    [
+                        StubFuture(sam_done_flags, result=["mask"]),
+                        StubFuture(
+                            wonder_done_flags, result=wonder_result
+                        ),
+                    ],
+                    calls,
+                ),
+            ),
+            patch.object(
+                app, "get_meta_api_key", return_value="key-123"
+            ) as mock_key,
+            patch.object(app, "summarize_masks", return_value="summary"),
+            patch.object(app.random, "randint", return_value=1),
+            patch("time.sleep"),
+        ):
+            result = app._run_live_pipeline_sync(
+                safe_image, "riverside", retry, on_progress
+            )
+        return events, result, calls, mock_key, safe_image, retry
+
+    def test_fast_futures_emit_plain_milestones(self):
+        events, result, calls, mock_key, safe_image, retry = (
+            self.run_pipeline([True], [True])
+        )
+        self.assertEqual(
+            result, {"latitude": 1.0, "longitude": 2.0}
+        )
+        mock_key.assert_called_once_with()
+        sam_fn, sam_args, _kwargs = calls["submits"][0]
+        self.assertIs(sam_fn, app._segment_image_sync)
+        self.assertEqual(sam_args, (safe_image, "key-123", retry))
+        wonder_fn, wonder_args, _kwargs = calls["submits"][1]
+        self.assertIs(wonder_fn, app._reason_wonder_sync)
+        self.assertEqual(
+            wonder_args, ("summary", "riverside", retry, safe_image, "key-123")
+        )
+        self.assertEqual(
+            [init[1] for init in calls["inits"]],
+            [
+                {"max_workers": 1, "thread_name_prefix": "sam-segment"},
+                {"max_workers": 1, "thread_name_prefix": "wonder-reason"},
+            ],
+        )
+        self.assertEqual(calls["closed"], [True, True])
+        self.assertEqual(
+            events,
+            [
+                (
+                    5,
+                    "Segmenting image and extracting infrastructural "
+                    "clues...",
+                ),
+                (
+                    45,
+                    "Cross-referencing biomes, architecture, and "
+                    "topography...",
+                ),
+            ],
+        )
+
+    def test_slow_futures_interleave_ticks(self):
+        events, _result, _calls, _key, _image, _retry = self.run_pipeline(
+            [False, False, False, False, True],
+            [False, False, False, False, True],
+        )
+        self.assertEqual(
+            [percent for percent, _message in events],
+            [5, 6, 7, 45, 46, 47],
+        )
 
 
 class StateDict(dict):
@@ -325,21 +454,46 @@ class StateDict(dict):
         self[name] = value
 
 
-class AnalysisPhaseLoaderTests(unittest.TestCase):
-    def test_analysis_phase_uses_progress_loader_not_spinner(self):
-        outcome = {"kind": "ok", "mock": True, "result": {"coordinates": {}}}
-        state = StateDict(
-            {
-                "developer_mode": True,
-                "is_processing": True,
-                "analysis_pending": True,
-                "analysis_outcome": None,
-                "last_upload_key": None,
-                "screened_image": None,
-                "sam_result": None,
-                "wonder_result": None,
-            }
+def clicked_state(**overrides):
+    state = StateDict(
+        {
+            "developer_mode": True,
+            "is_analyzing": False,
+            "analysis_results": None,
+            "last_upload_key": None,
+            "screened_image": None,
+            "sam_result": None,
+            "wonder_result": None,
+        }
+    )
+    state.update(overrides)
+    return state
+
+
+def shown_status_texts(status_slot):
+    return [call[0][0] for call in status_slot.markdown.call_args_list]
+
+
+def shown_bar_values(progress_bar):
+    return [call[0][0] for call in progress_bar.progress.call_args_list]
+
+
+class LockedProgressTests(unittest.TestCase):
+    def test_start_analysis_locks_and_clears_results(self):
+        state = clicked_state(
+            analysis_results={"kind": "ok", "mock": True, "result": {}},
         )
+        mock_st = MagicMock()
+        mock_st.session_state = state
+        with patch.object(app, "st", mock_st):
+            app.start_analysis()
+        self.assertTrue(state["is_analyzing"])
+        self.assertIsNone(state["analysis_results"])
+        mock_st.rerun.assert_not_called()
+
+    def test_armed_run_executes_mock_milestones_0_to_100(self):
+        outcome = {"kind": "ok", "mock": True, "result": {"coordinates": {}}}
+        state = clicked_state(is_analyzing=True)
         mock_st = MagicMock()
         mock_st.session_state = state
         mock_st.file_uploader.return_value = None
@@ -349,40 +503,62 @@ class AnalysisPhaseLoaderTests(unittest.TestCase):
             MagicMock(),
             MagicMock(),
         )
+        mock_ui = MagicMock()
+        mock_ui.button.return_value = False
         mock_execute = MagicMock(return_value=outcome)
-        show_centered_lottie_mock = MagicMock()
+        mock_show = MagicMock()
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", MagicMock()),
+            patch.object(app, "ui", mock_ui),
             patch.object(app, "execute_analysis", mock_execute),
             patch.object(app, "load_lottie_animation", return_value=None),
-            patch.object(
-                app, "show_centered_lottie", show_centered_lottie_mock
-            ),
+            patch.object(app, "show_centered_lottie", mock_show),
+            patch("time.sleep") as mock_sleep,
         ):
             app.render_home(developer_mode=True)
-        # No animation: only the three loader placeholders exist, no
-        # empty animation slot above the progress text.
-        self.assertEqual(mock_st.empty.call_count, 3)
-        show_centered_lottie_mock.assert_not_called()
-        mock_st.progress.assert_not_called()
-        mock_st.spinner.assert_not_called()
-        mock_execute.assert_called_once_with(None, "", True)
-        self.assertIs(state["analysis_outcome"], outcome)
-
-    def test_animation_slot_created_only_when_animation_renders(self):
-        outcome = {"kind": "ok", "mock": True, "result": {"coordinates": {}}}
-        state = StateDict(
-            {
-                "developer_mode": True,
-                "is_processing": True,
-                "analysis_pending": True,
-                "analysis_outcome": None,
-                "screened_image": None,
-                "sam_result": None,
-                "wonder_result": None,
-            }
+        mock_ui.button.assert_called_once_with(
+            "Analyze Memory",
+            key="analyze_btn",
+            size="lg",
+            width="stretch",
+            disabled=True,
+            on_click=app.start_analysis,
         )
+        mock_execute.assert_called_once_with(None, "", True)
+        # No animation: progress slots plus the fallback sweep slot.
+        self.assertEqual(mock_st.empty.call_count, 3)
+        mock_show.assert_not_called()
+        fallback_html = [c[0][0] for c in mock_st.markdown.call_args_list]
+        self.assertIn(app.SCAN_FALLBACK_HTML, fallback_html)
+        slot = mock_st.empty.return_value
+        mock_st.progress.assert_not_called()
+        self.assertEqual(
+            shown_status_texts(slot),
+            [
+                '<div class="loading-text">0% - Initializing spatial '
+                "analysis...</div>",
+                '<div class="loading-text">5% - Segmenting image and '
+                "extracting infrastructural clues...</div>",
+                '<div class="loading-text">45% - Cross-referencing biomes, '
+                "architecture, and topography...</div>",
+                '<div class="loading-text">95% - Cross-referencing biomes, '
+                "architecture, and topography...</div>",
+                '<div class="loading-text">100% - Analysis '
+                "complete.</div>",
+            ],
+        )
+        self.assertEqual(shown_bar_values(slot), [0, 5, 45, 95, 100])
+        mock_sleep.assert_called_once_with(0.5)
+        # Only the animation slot is cleared; the completed bar persists.
+        slot.empty.assert_called_once_with()
+        mock_st.spinner.assert_not_called()
+        mock_st.rerun.assert_called_once_with()
+        self.assertFalse(state["is_analyzing"])
+        self.assertIs(state["analysis_results"], outcome)
+
+    def test_armed_run_routes_live_and_forwards_progress_callback(self):
+        outcome = {"kind": "ok", "mock": False, "result": {}}
+        state = clicked_state(developer_mode=False, is_analyzing=True)
         mock_st = MagicMock()
         mock_st.session_state = state
         mock_st.file_uploader.return_value = None
@@ -392,11 +568,63 @@ class AnalysisPhaseLoaderTests(unittest.TestCase):
             MagicMock(),
             MagicMock(),
         )
+        mock_ui = MagicMock()
+        mock_ui.button.return_value = False
+        mock_execute = MagicMock()
+        mock_direct = MagicMock(return_value=outcome)
+        with (
+            patch.object(app, "st", mock_st),
+            patch.object(app, "ui", mock_ui),
+            patch.object(app, "execute_analysis", mock_execute),
+            patch.object(app, "execute_live_analysis_direct", mock_direct),
+            patch.object(app, "load_lottie_animation", return_value=None),
+            patch("time.sleep"),
+        ):
+            app.render_home(developer_mode=False)
+        mock_execute.assert_not_called()
+        mock_direct.assert_called_once()
+        # Mid-run milestones come from the real backend through this
+        # callback; the mocked backend swallows them, so only the
+        # start and completion milestones render here.
+        slot = mock_st.empty.return_value
+        self.assertEqual(
+            shown_status_texts(slot),
+            [
+                '<div class="loading-text">0% - Initializing spatial '
+                "analysis...</div>",
+                '<div class="loading-text">100% - Analysis '
+                "complete.</div>",
+            ],
+        )
+        self.assertEqual(shown_bar_values(slot), [0, 100])
+        report = mock_direct.call_args.kwargs["on_progress"]
+        report(46, "Muse Wonder is now working as Sherlock Holmes...")
+        self.assertIn(
+            "46% - Muse Wonder is now working as Sherlock Holmes...",
+            shown_status_texts(slot)[-1],
+        )
+        self.assertEqual(shown_bar_values(slot)[-1], 46)
+        self.assertIs(state["analysis_results"], outcome)
+
+    def test_armed_run_always_renders_black_radar_sweep(self):
+        outcome = {"kind": "ok", "mock": True, "result": {"coordinates": {}}}
+        state = clicked_state(is_analyzing=True)
+        mock_st = MagicMock()
+        mock_st.session_state = state
+        mock_st.file_uploader.return_value = None
+        mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        )
+        mock_ui = MagicMock()
+        mock_ui.button.return_value = False
         animation = {"v": "5.5.9"}
         mock_show = MagicMock()
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", MagicMock()),
+            patch.object(app, "ui", mock_ui),
             patch.object(
                 app,
                 "execute_analysis",
@@ -405,15 +633,104 @@ class AnalysisPhaseLoaderTests(unittest.TestCase):
             patch.object(app, "st_lottie", MagicMock()),
             patch.object(
                 app, "load_lottie_animation", return_value=animation
-            ),
+            ) as mock_load,
             patch.object(app, "show_centered_lottie", mock_show),
+            patch("time.sleep"),
         ):
             app.render_home(developer_mode=True)
-        self.assertEqual(mock_st.empty.call_count, 4)
-        mock_show.assert_called_once_with(
-            mock_st.empty.return_value, animation
+        self.assertEqual(mock_st.empty.call_count, 3)
+        # The analyzing slot never touches the remote Lottie: the black
+        # radar sweep renders even when an animation would load.
+        mock_load.assert_not_called()
+        mock_show.assert_not_called()
+        fallback_html = [c[0][0] for c in mock_st.markdown.call_args_list]
+        self.assertIn(app.SCAN_FALLBACK_HTML, fallback_html)
+        # Only the animation slot is cleared; the progress UI persists.
+        mock_st.empty.return_value.empty.assert_called_once_with()
+        self.assertIs(state["analysis_results"], outcome)
+
+    def test_scan_fallback_renders_when_lottie_library_missing(self):
+        outcome = {"kind": "ok", "mock": True, "result": {"coordinates": {}}}
+        state = clicked_state(is_analyzing=True)
+        mock_st = MagicMock()
+        mock_st.session_state = state
+        mock_st.file_uploader.return_value = None
+        mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
         )
-        self.assertIs(state["analysis_outcome"], outcome)
+        mock_ui = MagicMock()
+        mock_ui.button.return_value = False
+        mock_show = MagicMock()
+        with (
+            patch.object(app, "st", mock_st),
+            patch.object(app, "ui", mock_ui),
+            patch.object(
+                app, "execute_analysis", MagicMock(return_value=outcome)
+            ),
+            patch.object(app, "st_lottie", None),
+            patch.object(app, "show_centered_lottie", mock_show),
+            patch("time.sleep"),
+        ):
+            app.render_home(developer_mode=True)
+        mock_show.assert_not_called()
+        fallback_html = [c[0][0] for c in mock_st.markdown.call_args_list]
+        self.assertIn(app.SCAN_FALLBACK_HTML, fallback_html)
+        self.assertIs(state["analysis_results"], outcome)
+
+
+class ResultsPersistenceTests(unittest.TestCase):
+    def run_home(self, state, clicked):
+        mock_st = MagicMock()
+        mock_st.session_state = state
+        mock_st.file_uploader.return_value = None
+        mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        )
+        mock_ui = MagicMock()
+        mock_ui.button.return_value = clicked
+        mock_execute = MagicMock()
+        with (
+            patch.object(app, "st", mock_st),
+            patch.object(app, "ui", mock_ui),
+            patch.object(app, "execute_analysis", mock_execute),
+            patch.object(app, "load_lottie_animation", return_value=None),
+            patch("time.sleep"),
+        ):
+            app.render_home(developer_mode=True)
+        return mock_st, mock_execute
+
+    def test_fresh_run_paints_no_progress(self):
+        state = clicked_state()
+        mock_st, mock_execute = self.run_home(state, clicked=False)
+        mock_execute.assert_not_called()
+        mock_st.empty.assert_not_called()
+        mock_st.progress.assert_not_called()
+
+    def test_settled_run_renders_persisted_results_without_bar(self):
+        outcome = {"kind": "ok", "mock": True, "result": {"coordinates": {}}}
+        state = clicked_state(analysis_results=outcome)
+        mock_st, mock_execute = self.run_home(state, clicked=False)
+        mock_execute.assert_not_called()
+        mock_st.empty.assert_not_called()
+        mock_st.success.assert_called_once_with(
+            "Mock analysis complete (no backend call)."
+        )
+        self.assertIs(state["analysis_results"], outcome)
+
+    def test_new_upload_clears_persisted_results(self):
+        state = clicked_state(
+            last_upload_key="old:1",
+            analysis_results={"kind": "ok", "mock": True, "result": {}},
+        )
+        mock_st, _ = self.run_home(state, clicked=False)
+        self.assertIsNone(state["analysis_results"])
+        mock_st.empty.assert_not_called()
 
 
 if __name__ == "__main__":

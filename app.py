@@ -3,10 +3,10 @@
 import asyncio
 import html
 import json
-import math
-import threading
+import random
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
@@ -17,10 +17,13 @@ from face_screening import screen_image_faces
 from file_sanitizer import is_valid_image, sanitize_uploaded_image
 from image_quality import has_sufficient_visual_data
 from sam_segmentation import (
+    DENSE_IMAGE_MESSAGE,
     RETRY_STATUS_TEXT,
     SamApiError,
+    SamDenseImageError,
     SamSegmenter,
     draw_mask_boxes,
+    get_meta_api_key,
     summarize_masks,
 )
 from spatial_reasoning import (
@@ -59,15 +62,6 @@ try:
 except ImportError:  # pragma: no cover
     st_folium = None
 
-try:
-    from streamlit.runtime.scriptrunner import (
-        add_script_run_ctx,
-        get_script_run_ctx,
-    )
-except ImportError:  # pragma: no cover
-    add_script_run_ctx = None
-    get_script_run_ctx = None
-
 NEON_ACCENT = "#00FFAA"
 METRIC_CARD_BACKGROUND = "#1E1E1E"
 
@@ -81,21 +75,90 @@ LOTTIE_SEARCH_EMPTY_URL = (
     "frontend/src/assets/animations/empty.json"
 )
 LOTTIE_FETCH_TIMEOUT = 10.0
+LOTTIE_TINT_RGB = (0.0, 1.0, 170 / 255)
+"""Neon accent (#00FFAA) as Lottie 0-1 RGB floats."""
+
+
+def _is_lottie_payload(data) -> bool:
+    """True when fetched JSON has the markers of a Lottie animation."""
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("v"), str)
+        and isinstance(data.get("layers"), list)
+    )
+
+def _tint_lottie_static_color(node: dict) -> None:
+    """Remap an exact-white static color node to the neon tint in place."""
+    key = node.get("k")
+    if (
+        isinstance(key, list)
+        and len(key) == 4
+        and all(channel == 1 for channel in key[:3])
+    ):
+        node["k"] = [*LOTTIE_TINT_RGB, key[3]]
+
+
+def _tint_lottie_keyframes(node: dict) -> None:
+    """Remap exact-white animated color keyframes to the neon tint."""
+    frames = node.get("k")
+    if not isinstance(frames, list):
+        return
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        for edge in ("s", "e"):
+            stop = frame.get(edge)
+            if (
+                isinstance(stop, list)
+                and len(stop) == 4
+                and all(channel == 1 for channel in stop[:3])
+            ):
+                frame[edge] = [*LOTTIE_TINT_RGB, stop[3]]
+
+
+def tint_lottie_white_fills(payload: dict) -> dict:
+    """Recolor white vector artwork in a Lottie payload to neon green.
+
+    The remote radar asset ships all-white fills meant to be tinted;
+    untinted it renders white against the dark theme. Only exact-white
+    RGB is remapped (alpha preserved); every other color passes through
+    untouched. Mutates and returns the payload.
+    """
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            color = node.get("c")
+            if isinstance(color, dict):
+                if color.get("a"):
+                    _tint_lottie_keyframes(color)
+                else:
+                    _tint_lottie_static_color(color)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(payload)
+    return payload
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_lottie_animation(url: str = LOTTIE_RADAR_URL) -> dict | None:
     """Fetch a Lottie JSON animation; None when unavailable.
 
-    Any failure (network, timeout, invalid JSON, non-object payload)
-    returns None so callers fall back to the plain spinner.
+    Any failure (network, timeout, invalid JSON, non-Lottie payload)
+    returns None so callers fall back to the local scan sweep.
+    White vector artwork in a valid payload is tinted to the neon
+    accent so the asset matches the dark theme.
     """
     try:
         with urllib.request.urlopen(url, timeout=LOTTIE_FETCH_TIMEOUT) as response:
             data = json.loads(response.read().decode("utf-8"))
     except Exception:
         return None
-    return data if isinstance(data, dict) else None
+    if not _is_lottie_payload(data):
+        return None
+    return tint_lottie_white_fills(data)
 
 
 def show_centered_lottie(
@@ -108,7 +171,34 @@ def show_centered_lottie(
             st_lottie(animation, height=240, key=key)
 
 
-SAM_WONDER_PROGRESS_MESSAGES = (
+SCAN_FALLBACK_HTML = '<div class="scan-radar" aria-hidden="true"></div>'
+
+
+def show_scan_fallback(slot) -> None:
+    """Render the black CSS radar sweep while analysis runs."""
+    with slot.container():
+        _, center, _ = st.columns([1, 2, 1])
+        with center:
+            st.markdown(SCAN_FALLBACK_HTML, unsafe_allow_html=True)
+
+
+MILESTONE_INIT = (0, "Initializing spatial analysis...")
+# SAM starts near zero so the bar climbs instead of jumping from 0%.
+MILESTONE_SAM = (5, "Segmenting image and extracting infrastructural clues...")
+MILESTONE_WONDER = (
+    45,
+    "Cross-referencing biomes, architecture, and topography...",
+)
+MILESTONE_DONE = (100, "Analysis complete.")
+COMPLETION_HOLD_SECONDS = 0.5
+SAM_PROGRESS_TICK_SECONDS = 2.0
+SAM_PROGRESS_TICK_MAX_STEP = 3
+SAM_PROGRESS_CAP = 44
+WONDER_PROGRESS_TICK_SECONDS = 2.0
+WONDER_PROGRESS_TICK_MAX_STEP = 3
+WONDER_PROGRESS_CAP = 95
+MILESTONE_WONDER_DONE = (WONDER_PROGRESS_CAP, MILESTONE_WONDER[1])
+SAM_TICK_MESSAGES = (
     "SAM 3.1 is dissecting the image...",
     "SAM 3.1 is acting like a detective...",
     "Scanning the scene for infrastructural clues...",
@@ -118,6 +208,8 @@ SAM_WONDER_PROGRESS_MESSAGES = (
     "Mapping shapes, edges, and spatial structure...",
     "Reading light, color, and atmosphere...",
     "Cataloguing every visible clue and pattern...",
+)
+WONDER_TICK_MESSAGES = (
     "Muse Wonder is now working as Sherlock Holmes...",
     "Cross-referencing global architectural patterns...",
     "Triangulating position from every available cue...",
@@ -133,120 +225,21 @@ SAM_WONDER_PROGRESS_MESSAGES = (
     "Locking onto the target grid...",
     "Preparing the final spatial verdict...",
 )
-API_PROGRESS_TICK_SECONDS = 0.15
-API_PROGRESS_CAP = 95
-API_PROGRESS_ETA_SECONDS = 120.0
-API_PROGRESS_WRAP_UP_TEXT = "Wrapping up final deductions..."
 
 
-def simulate_smooth_progress(
-    stop_event,
-    status_slot,
-    progress_slot,
-    messages=SAM_WONDER_PROGRESS_MESSAGES,
-    tick_seconds: float = API_PROGRESS_TICK_SECONDS,
-    eta_slot=None,
-    duration_seconds: float = API_PROGRESS_ETA_SECONDS,
+def report_analysis_milestone(
+    status_slot, progress_bar, percent: int, message: str
 ) -> None:
-    """Fill the bar from 0% to 95% over the ETA window, then hold.
+    """Update the status text and the progress bar together, in place.
 
-    Percent, message, and countdown all derive from the same elapsed
-    timer: percent climbs linearly to API_PROGRESS_CAP across
-    duration_seconds, the message advances proportionally through the
-    array (no repeats until a full pass), and the ETA slot counts down
-    the remaining seconds. Past the window the bar holds at 95% with
-    the wrap-up text until the pipeline stops the thread, which then
-    snaps the bar to 100%. Runs on a daemon thread; all slots update
-    in place without a page reload.
+    Called directly from the main execution flow as the pipeline hits
+    real backend milestones; no threads, timers, or countdowns.
     """
-    total = len(messages)
-    if total == 0:
-        return
-    duration = max(float(duration_seconds), 0.001)
-    started = time.monotonic()
-    shown_eta = None
-    while not stop_event.is_set():
-        elapsed = time.monotonic() - started
-        if elapsed >= duration:
-            percent = API_PROGRESS_CAP
-            message = API_PROGRESS_WRAP_UP_TEXT
-        else:
-            percent = min(
-                API_PROGRESS_CAP, int(elapsed / duration * API_PROGRESS_CAP)
-            )
-            index = min(int(percent / API_PROGRESS_CAP * total), total - 1)
-            message = messages[index]
-        status_slot.markdown(
-            f'<div class="loading-text">'
-            f"{percent}% - {message}</div>",
-            unsafe_allow_html=True,
-        )
-        progress_slot.progress(percent)
-        if eta_slot is not None:
-            remaining = duration - elapsed
-            if remaining <= 0:
-                eta_text = API_PROGRESS_WRAP_UP_TEXT
-            else:
-                eta_text = (
-                    "Approximated time left: "
-                    f"{math.ceil(remaining)}s"
-                )
-            if eta_text != shown_eta:
-                shown_eta = eta_text
-                eta_slot.markdown(
-                    f'<div class="eta-text">{eta_text}</div>',
-                    unsafe_allow_html=True,
-                )
-        if stop_event.wait(tick_seconds):
-            break
-
-
-def start_analysis_loader(first_message: str):
-    """Initialize the bar at 0% and animate it over the ETA window.
-
-    Uses st.empty() placeholders so the text, bar, and countdown update
-    in place. Returns an opaque loader handle for stop_analysis_loader().
-    """
-    status_slot = st.empty()
-    progress_slot = st.empty()
-    eta_slot = st.empty()
     status_slot.markdown(
-        f'<div class="loading-text">0% - {first_message}</div>',
+        f'<div class="loading-text">{percent}% - {message}</div>',
         unsafe_allow_html=True,
     )
-    progress_slot.progress(0)
-    eta_slot.markdown(
-        '<div class="eta-text">Approximated time left: '
-        f"{math.ceil(API_PROGRESS_ETA_SECONDS)}s</div>",
-        unsafe_allow_html=True,
-    )
-    stop_event = threading.Event()
-    animator = threading.Thread(
-        target=simulate_smooth_progress,
-        args=(stop_event, status_slot, progress_slot),
-        kwargs={"eta_slot": eta_slot},
-        daemon=True,
-    )
-    if add_script_run_ctx is not None and get_script_run_ctx is not None:
-        ctx = get_script_run_ctx()
-        if ctx is not None:
-            try:
-                add_script_run_ctx(animator, ctx)
-            except Exception:
-                pass
-    animator.start()
-    return (stop_event, animator, status_slot, progress_slot, eta_slot)
-
-
-def stop_analysis_loader(loader) -> None:
-    """Stop the timer, snap the bar to 100%, and clear the loader."""
-    stop_event, animator, status_slot, progress_slot, eta_slot = loader
-    stop_event.set()
-    animator.join(timeout=3.0)
-    progress_slot.progress(100)
-    status_slot.empty()
-    progress_slot.empty()
-    eta_slot.empty()
+    progress_bar.progress(percent)
 
 
 BACKGROUND_IMAGE_URL = (
@@ -301,13 +294,24 @@ section[data-testid="stSidebar"] {
     padding: 1.5rem !important;
 }
 
-div[data-testid="stFileUploader"],
-div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] {
-    background: rgba(255, 255, 255, 0.07) !important;
-    backdrop-filter: blur(20px) saturate(180%) !important;
-    -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
-    border: 1px dotted rgba(255, 255, 255, 0.4) !important;
-    border-radius: 16px !important;
+/* Upload a memory: outer wrapper stays invisible so only one seamless dropzone shows. */
+div[data-testid="stFileUploader"] {
+    background: transparent !important;
+    background-image: none !important;
+    border: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    padding: 0 !important;
+}
+
+/* Remove the rogue white help/tooltip circle in the uploader header. */
+div[data-testid="stFileUploader"] [data-testid="stTooltipIcon"],
+div[data-testid="stFileUploader"] .stTooltipIcon,
+div[data-testid="stFileUploader"] label[data-testid="stWidgetLabel"] button,
+div[data-testid="stFileUploader"] div[data-testid="stWidgetLabel"] button,
+div[data-testid="stFileUploader"] label button {
+    display: none !important;
 }
 
 /* High-contrast labels for toggles and widgets */
@@ -515,108 +519,118 @@ div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stTextInput"] l
     margin-right: auto !important;
 }
 
-/* Re-style Streamlit Native File Uploader Dropzone */
+/* Seamless single-surface file dropzone: one dashed border, no nested card. */
 div[data-testid="stFileUploader"] {
     margin-bottom: 1.5rem !important;
 }
 
-section[data-testid="stFileUploadDropzone"] {
-    background: rgba(255, 255, 255, 0.05) !important;
-    border: 1px dashed rgba(255, 255, 255, 0.25) !important;
-    border-radius: 16px !important;
-    padding: 1.5rem 1rem !important;
-    transition: all 0.3s ease !important;
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"],
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] {
+    background: rgba(0, 0, 0, 0.2) !important;
+    background-image: none !important;
+    border: 1px dashed rgba(255, 255, 255, 0.22) !important;
+    border-radius: 14px !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    padding: 1.75rem 1.25rem !important;
+    transition: border-color 0.25s ease, background-color 0.25s ease !important;
 }
 
-section[data-testid="stFileUploadDropzone"]:hover {
-    background: rgba(255, 255, 255, 0.09) !important;
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"]:hover,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"]:hover,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"]:focus-within,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"]:focus-within {
+    background: rgba(0, 0, 0, 0.28) !important;
     border-color: rgba(255, 255, 255, 0.45) !important;
 }
 
-/* Upload dropzone text color */
-section[data-testid="stFileUploadDropzone"] span,
-section[data-testid="stFileUploadDropzone"] div,
-section[data-testid="stFileUploadDropzone"] small {
-    color: rgba(255, 255, 255, 0.75) !important;
+/* Primary dropzone prompt stays bright; inner layout divs stay unboxed. */
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"] > div,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] > div {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
 }
 
-/* Restyle inner dropzone button to dark glass pill matching the text input */
-section[data-testid="stFileUploadDropzone"] button {
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"] span,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] span {
+    color: rgba(255, 255, 255, 0.85) !important;
+    font-size: 0.92rem !important;
+    font-weight: 500 !important;
+}
+
+/* Limit/format subtext: legible soft translucent white. */
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"] small,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] small {
+    color: rgba(255, 255, 255, 0.6) !important;
+    font-size: 0.8rem !important;
+    letter-spacing: 0.01em !important;
+}
+
+/* Browse-files button: dark pill matching the text input, both testid spellings. */
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] button,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"] button {
     background: rgba(18, 18, 22, 0.85) !important;
-    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    border: 1px solid rgba(255, 255, 255, 0.22) !important;
     border-radius: 12px !important;
     color: #ffffff !important;
     font-weight: 500 !important;
     padding: 0.55rem 1.3rem !important;
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3) !important;
-    transition: all 0.25s ease !important;
+    transition: background-color 0.25s ease, border-color 0.25s ease, transform 0.25s ease !important;
 }
 
-section[data-testid="stFileUploadDropzone"] button:hover {
-    background: rgba(30, 30, 38, 0.95) !important;
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"] button:hover,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] button:hover {
+    background-color: rgba(30, 30, 38, 0.95) !important;
     border-color: rgba(255, 255, 255, 0.35) !important;
-    color: #ffffff !important;
     transform: translateY(-1px);
 }
 
-/* Make upload icon inside button white */
-section[data-testid="stFileUploadDropzone"] button svg {
-    fill: #ffffff !important;
-    stroke: #ffffff !important;
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"] button:focus-visible,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] button:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.5) !important;
+    outline-offset: 2px !important;
 }
 
-/* Harden the dark button theme: kill any residual white fill, cover the
-   alternate dropzone testid spelling and focus/active states */
-div[data-testid="stFileUploader"] button,
-section[data-testid="stFileUploadDropzone"] button,
-section[data-testid="stFileUploaderDropzone"] button {
-    background-color: rgba(18, 18, 22, 0.9) !important;
-    background-image: none !important;
-    border: 1px solid rgba(255, 255, 255, 0.22) !important;
-    color: #ffffff !important;
-}
-
-div[data-testid="stFileUploader"] button:hover,
-section[data-testid="stFileUploaderDropzone"] button:hover,
-div[data-testid="stFileUploader"] button:focus,
-section[data-testid="stFileUploadDropzone"] button:focus,
-section[data-testid="stFileUploaderDropzone"] button:focus,
-div[data-testid="stFileUploader"] button:active,
-section[data-testid="stFileUploadDropzone"] button:active,
-section[data-testid="stFileUploaderDropzone"] button:active {
-    background: rgba(30, 30, 38, 0.95) !important;
-    background-color: rgba(30, 30, 38, 0.95) !important;
-    background-image: none !important;
-    border-color: rgba(255, 255, 255, 0.35) !important;
-    color: #ffffff !important;
-}
-
-div[data-testid="stFileUploader"] button svg,
-section[data-testid="stFileUploaderDropzone"] button svg {
+div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"] button svg,
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] button svg {
     fill: #ffffff !important;
     stroke: #ffffff !important;
     color: #ffffff !important;
 }
 
-/* Style dropzone background and secondary text */
-section[data-testid="stFileUploadDropzone"] {
-    background: rgba(255, 255, 255, 0.04) !important;
-    border: 1px dashed rgba(255, 255, 255, 0.2) !important;
-    border-radius: 16px !important;
-}
-
-section[data-testid="stFileUploadDropzone"] span,
-section[data-testid="stFileUploadDropzone"] small {
-    color: rgba(255, 255, 255, 0.55) !important;
-    font-size: 0.9rem !important;
-}
-
-/* Keep staged file rows dark (no light blocks after selection) */
+/* Staged file rows stay dark and quiet (no light blocks after selection). */
 div[data-testid="stFileUploader"] li,
 div[data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] {
-    background: rgba(255, 255, 255, 0.06) !important;
-    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    background: rgba(0, 0, 0, 0.25) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
     border-radius: 12px !important;
+    color: #ffffff !important;
+}
+
+div[data-testid="stFileUploader"] li small,
+div[data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] small {
+    color: rgba(255, 255, 255, 0.6) !important;
+}
+
+/* File-row delete control is a ghost icon button, not a second dark pill. */
+div[data-testid="stFileUploader"] li button,
+div[data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] button {
+    background: transparent !important;
+    background-image: none !important;
+    border: 1px solid transparent !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
+    color: rgba(255, 255, 255, 0.7) !important;
+    padding: 0.25rem !important;
+}
+
+div[data-testid="stFileUploader"] li button:hover,
+div[data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] button:hover {
+    background: rgba(255, 255, 255, 0.1) !important;
+    border-color: rgba(255, 255, 255, 0.2) !important;
     color: #ffffff !important;
 }
 
@@ -664,15 +678,19 @@ div.stButton > button:hover {
     box-shadow: 0 8px 25px rgba(255, 255, 255, 0.35) !important;
 }
 
-/* Gradient Pill Progress Bar */
-.stProgress > div > div > div > div {
-    background-image: linear-gradient(90deg, #ff5bd5 0%, #a25df5 50%, #5d8af5 100%) !important;
+/* The background track of the progress bar */
+div[data-testid="stProgressBar"] > div {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
     border-radius: 50px !important;
 }
-.stProgress > div > div > div {
-    background-color: rgba(255, 255, 255, 0.1) !important;
+
+/* The actual colored fill of the progress bar indicating percentage */
+div[data-testid="stProgressBar"] > div > div {
+    background-image: linear-gradient(90deg, #ff5bd5 0%, #a25df5 50%, #5d8af5 100%) !important;
+    background-color: transparent !important;
     border-radius: 50px !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    height: 100% !important;
 }
 /* Center the loading text above the progress bar */
 .loading-text {
@@ -683,15 +701,49 @@ div.stButton > button:hover {
     margin-bottom: 10px;
     font-size: 1rem;
 }
-/* Approximated-time-left countdown beneath the progress bar */
-.eta-text {
-    text-align: center;
-    color: rgba(255, 255, 255, 0.55);
-    font-size: 0.8rem;
-    letter-spacing: 0.5px;
-    margin-top: 8px;
+/* Black radar sweep shown while analysis runs */
+.scan-radar {
+    width: 200px;
+    height: 200px;
+    margin: 0.5rem auto;
+    border-radius: 50%;
+    position: relative;
+    border: 1px solid rgba(0, 255, 170, 0.5);
+    background:
+        radial-gradient(circle, rgba(0, 255, 170, 0.12) 0%, rgba(0, 0, 0, 0) 55%),
+        repeating-radial-gradient(circle, rgba(0, 255, 170, 0.22) 0 1px, rgba(0, 0, 0, 0) 1px 34px),
+        #000;
+    overflow: hidden;
 }
-
+.scan-radar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, rgba(0, 255, 170, 0.95), rgba(0, 255, 170, 0.12) 18%, transparent 32%);
+    animation: scan-spin 2.4s linear infinite;
+}
+.scan-radar::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #00ffaa;
+    box-shadow: 0 0 8px rgba(0, 255, 170, 0.9);
+}
+@keyframes scan-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .scan-radar::before {
+        animation: none;
+    }
+}
 /* Luxury result dashboard: unified dark glass wrapper */
 .result-glass {
     background: rgba(10, 14, 26, 0.88);
@@ -1009,28 +1061,133 @@ def render_analysis_outcome(outcome: dict | None) -> None:
         st.error(outcome.get("message", "Analysis failed."))
 
 
-async def _run_wonder_reasoning(sam_summary, regional_hint, on_retry):
-    async with SpatialReasoner(on_retry=on_retry) as reasoner:
-        return await reasoner.reason(sam_summary, regional_hint)
+async def _run_wonder_reasoning(
+    sam_summary, regional_hint, on_retry, image=None, api_key=None
+):
+    async with SpatialReasoner(api_key=api_key, on_retry=on_retry) as reasoner:
+        return await reasoner.reason(sam_summary, regional_hint, image=image)
 
 
-async def _run_live_pipeline(safe_image, regional_hint, on_retry=None):
-    """Run SAM 3.1 segmentation then Muse Wonder reasoning directly."""
-    async with SamSegmenter(on_retry=on_retry) as segmenter:
-        sam_result = await segmenter.segment_image(safe_image)
-    async with SpatialReasoner(on_retry=on_retry) as reasoner:
-        return await reasoner.reason(
-            summarize_masks(sam_result), regional_hint, image=safe_image
+def _reason_wonder_sync(sam_summary, regional_hint, on_retry, image, api_key):
+    """Blocking Wonder entry point submitted to the executor worker."""
+    return asyncio.run(
+        _run_wonder_reasoning(
+            sam_summary, regional_hint, on_retry, image=image, api_key=api_key
         )
+    )
 
 
-def _run_live_pipeline_sync(safe_image, regional_hint, on_retry=None):
-    """Sync wrapper for the direct SAM+Wonder pipeline (test seam)."""
-    return asyncio.run(_run_live_pipeline(safe_image, regional_hint, on_retry))
+async def _run_sam_segmentation(safe_image, api_key, on_retry=None):
+    """Segment one image; runs on the executor worker's own event loop."""
+    async with SamSegmenter(api_key=api_key, on_retry=on_retry) as segmenter:
+        return await segmenter.segment_image(safe_image)
+
+
+def _segment_image_sync(safe_image, api_key, on_retry=None):
+    """Blocking SAM entry point submitted to the executor worker."""
+    return asyncio.run(_run_sam_segmentation(safe_image, api_key, on_retry))
+
+
+def _await_future_with_ticks(
+    future,
+    start_percent,
+    messages,
+    cap,
+    max_step,
+    interval_seconds,
+    on_progress=None,
+):
+    """Wait for a worker future, ticking progress on an interval.
+
+    Paints upward from start_percent every interval_seconds while the
+    future runs, advancing each tick by a random 1..max_step so the
+    climb never looks mechanical, and rotating the status text through
+    messages (wrapping with a msg_index). Holds silently at cap.
+    Returns future.result(), re-raising worker errors on the main
+    thread. With no observer, waits without polling so a fast finish
+    costs no extra sleep.
+    """
+    if on_progress is None:
+        return future.result()
+    percent = start_percent
+    msg_index = 0
+    while not future.done():
+        time.sleep(interval_seconds)
+        if future.done():
+            break
+        if percent < cap:
+            percent = min(percent + random.randint(1, max_step), cap)
+            on_progress(percent, messages[msg_index % len(messages)])
+            msg_index += 1
+    return future.result()
+
+
+def _await_sam_future(future, on_progress=None):
+    """Wait for the SAM worker, ticking 6..44 through SAM messages."""
+    return _await_future_with_ticks(
+        future,
+        start_percent=MILESTONE_SAM[0],
+        messages=SAM_TICK_MESSAGES,
+        cap=SAM_PROGRESS_CAP,
+        max_step=SAM_PROGRESS_TICK_MAX_STEP,
+        interval_seconds=SAM_PROGRESS_TICK_SECONDS,
+        on_progress=on_progress,
+    )
+
+
+def _await_wonder_future(future, on_progress=None):
+    """Wait for the Wonder worker, ticking 46..95 through Wonder messages."""
+    return _await_future_with_ticks(
+        future,
+        start_percent=MILESTONE_WONDER[0],
+        messages=WONDER_TICK_MESSAGES,
+        cap=WONDER_PROGRESS_CAP,
+        max_step=WONDER_PROGRESS_TICK_MAX_STEP,
+        interval_seconds=WONDER_PROGRESS_TICK_SECONDS,
+        on_progress=on_progress,
+    )
+
+
+def _run_live_pipeline_sync(
+    safe_image, regional_hint, on_retry=None, on_progress=None
+):
+    """Run SAM then Wonder on worker threads with animated waits.
+
+    The Meta key resolves once on the main thread so neither worker
+    touches st.secrets. Test seam: patch app.ThreadPoolExecutor.
+    """
+    if on_progress is not None:
+        on_progress(*MILESTONE_SAM)
+    api_key = get_meta_api_key()
+    with ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="sam-segment"
+    ) as sam_pool:
+        sam_future = sam_pool.submit(
+            _segment_image_sync, safe_image, api_key, on_retry
+        )
+        sam_result = _await_sam_future(sam_future, on_progress)
+    if on_progress is not None:
+        on_progress(*MILESTONE_WONDER)
+    with ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="wonder-reason"
+    ) as wonder_pool:
+        wonder_future = wonder_pool.submit(
+            _reason_wonder_sync,
+            summarize_masks(sam_result),
+            regional_hint,
+            on_retry,
+            safe_image,
+            api_key,
+        )
+        wonder_result = _await_wonder_future(wonder_future, on_progress)
+    return wonder_result
 
 
 def execute_live_analysis_direct(
-    uploaded_file, regional_hint: str, screener=screen_image_faces
+    uploaded_file,
+    regional_hint: str,
+    screener=screen_image_faces,
+    on_progress=None,
 ) -> dict:
     """Validate gates then run SAM+Wonder directly (no localhost backend).
 
@@ -1051,8 +1208,15 @@ def execute_live_analysis_direct(
     if status in ("rejected", "error"):
         return {"kind": "halt", "message": f"Cannot analyze: {face_message}"}
     try:
-        wonder_result = _run_live_pipeline_sync(safe_image, regional_hint)
+        wonder_result = _run_live_pipeline_sync(
+            safe_image, regional_hint, on_progress=on_progress
+        )
     except (SamApiError, SpatialReasoningError) as exc:
+        if isinstance(exc, SamApiError) and (
+            isinstance(exc, SamDenseImageError)
+            or "HTTP 500" in str(exc)
+        ):
+            return {"kind": "error", "message": DENSE_IMAGE_MESSAGE}
         return {"kind": "error", "message": str(exc)}
     try:
         rounded = round_wonder_coordinates(wonder_result)
@@ -1220,10 +1384,21 @@ def render_validation_badge(text: str) -> None:
     )
 
 
+def start_analysis() -> None:
+    """Lock the UI and clear stale results before the script body runs.
+
+    Registered as the Analyze button's on_click callback. Widget
+    callbacks fire at the start of the triggering run, so render_home
+    observes the armed lock immediately and runs the pipeline inline
+    with no manual rerun under the button.
+    """
+    st.session_state["is_analyzing"] = True
+    st.session_state["analysis_results"] = None
+
+
 def render_home(developer_mode: bool = False) -> None:
-    st.session_state.setdefault("is_processing", False)
-    st.session_state.setdefault("analysis_pending", False)
-    st.session_state.setdefault("analysis_outcome", None)
+    st.session_state.setdefault("is_analyzing", False)
+    st.session_state.setdefault("analysis_results", None)
     st.session_state.setdefault("last_upload_key", None)
     st.session_state.setdefault("screened_image", None)
     st.session_state.setdefault("sam_result", None)
@@ -1236,7 +1411,7 @@ def render_home(developer_mode: bool = False) -> None:
     if "developer_mode" not in st.session_state:
         st.session_state["developer_mode"] = st.session_state["dev_mode"]
     developer_mode = bool(st.session_state["dev_mode"])
-    is_processing = st.session_state["is_processing"]
+    is_analyzing = st.session_state["is_analyzing"]
 
     st.markdown(
         """
@@ -1278,7 +1453,7 @@ def render_home(developer_mode: bool = False) -> None:
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
             help="Sanitized locally with metadata removal and face blurring before spatial analysis.",
-            disabled=is_processing,
+            disabled=is_analyzing,
         )
         st.space("small")
         regional_hint = st.text_input(
@@ -1289,17 +1464,61 @@ def render_home(developer_mode: bool = False) -> None:
     st.space("small")
     _, btn_col, _ = st.columns([1, 2, 1])
     with btn_col:
-        analyze_clicked = ui.button(
+        # The on_click callback (start_analysis) is the source of truth
+        # for arming; the trigger return value is intentionally ignored
+        # so a settled or re-read trigger can never re-arm or loop.
+        ui.button(
             "Analyze Memory",
             key="analyze_btn",
             size="lg",
             width="stretch",
-            disabled=is_processing,
+            disabled=is_analyzing,
+            on_click=start_analysis,
         )
 
-    if analyze_clicked and not is_processing:
-        st.session_state["is_processing"] = True
-        st.session_state["analysis_pending"] = True
+    # Armed by start_analysis() before this run. Placeholders and API
+    # calls live inside this gate so the bar exists only while analysis
+    # runs; the finished output persists in session state and renders
+    # below on every run, surviving the unlock.
+    if st.session_state["is_analyzing"]:
+        status_slot = st.empty()
+        progress_slot = st.empty()
+        anim_slot = None
+        try:
+
+            def report(percent, message):
+                report_analysis_milestone(
+                    status_slot, progress_slot, percent, message
+                )
+
+            report(*MILESTONE_INIT)
+            anim_slot = st.empty()
+            # The black radar sweep always renders while analysis runs,
+            # so the scanning visual never depends on the network.
+            show_scan_fallback(anim_slot)
+            if developer_mode:
+                report(*MILESTONE_SAM)
+                outcome = execute_analysis(
+                    uploaded_file, regional_hint, True
+                )
+                report(*MILESTONE_WONDER)
+                report(*MILESTONE_WONDER_DONE)
+            else:
+                outcome = execute_live_analysis_direct(
+                    uploaded_file, regional_hint, on_progress=report
+                )
+            st.session_state["analysis_results"] = outcome
+            report(*MILESTONE_DONE)
+            time.sleep(COMPLETION_HOLD_SECONDS)
+        except Exception as exc:
+            st.session_state["analysis_results"] = {
+                "kind": "error",
+                "message": f"Analysis failed unexpectedly: {exc}",
+            }
+        finally:
+            if anim_slot is not None:
+                anim_slot.empty()
+            st.session_state["is_analyzing"] = False
         st.rerun()
 
     if uploaded_file is not None:
@@ -1340,46 +1559,6 @@ def render_home(developer_mode: bool = False) -> None:
                             )
                             st.session_state["screened_image"] = safe_image
 
-    if st.session_state["analysis_pending"] and is_processing:
-        label = (
-            "Analyzing memory (mock data)..."
-            if developer_mode
-            else "Analyzing memory..."
-        )
-        anim_slot = None
-        loader = None
-        try:
-            # No unpopulated placeholder: only create the animation slot
-            # when an animation is actually available to render in it.
-            if st_lottie is not None:
-                animation = load_lottie_animation()
-                if animation is not None:
-                    anim_slot = st.empty()
-                    show_centered_lottie(anim_slot, animation)
-            loader = start_analysis_loader(label)
-            if st.session_state.developer_mode:
-                outcome = execute_analysis(
-                    uploaded_file, regional_hint, True
-                )
-            else:
-                outcome = execute_live_analysis_direct(
-                    uploaded_file, regional_hint
-                )
-            st.session_state["analysis_outcome"] = outcome
-        except Exception as exc:
-            st.session_state["analysis_outcome"] = {
-                "kind": "error",
-                "message": f"Analysis failed unexpectedly: {exc}",
-            }
-        finally:
-            if loader is not None:
-                stop_analysis_loader(loader)
-            if anim_slot is not None:
-                anim_slot.empty()
-            st.session_state["analysis_pending"] = False
-            st.session_state["is_processing"] = False
-        st.rerun()
-
     upload_key = (
         f"{uploaded_file.name}:{uploaded_file.size}"
         if uploaded_file is not None
@@ -1387,12 +1566,12 @@ def render_home(developer_mode: bool = False) -> None:
     )
     if st.session_state["last_upload_key"] != upload_key:
         st.session_state["last_upload_key"] = upload_key
-        st.session_state["analysis_outcome"] = None
+        st.session_state["analysis_results"] = None
         st.session_state["screened_image"] = None
         st.session_state["sam_result"] = None
         st.session_state["wonder_result"] = None
 
-    render_analysis_outcome(st.session_state["analysis_outcome"])
+    render_analysis_outcome(st.session_state["analysis_results"])
 
 
 PIPELINE_DIAGRAM = """```mermaid

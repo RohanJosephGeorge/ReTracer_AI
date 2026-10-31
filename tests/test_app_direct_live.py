@@ -69,9 +69,8 @@ class ToggleDefaultTests(unittest.TestCase):
     def test_fresh_session_defaults_developer_mode_off(self):
         state = StateDict(
             {
-                "is_processing": False,
-                "analysis_pending": False,
-                "analysis_outcome": None,
+                "is_analyzing": False,
+                "analysis_results": None,
                 "last_upload_key": None,
                 "screened_image": None,
                 "sam_result": None,
@@ -95,9 +94,8 @@ class ToggleDefaultTests(unittest.TestCase):
     def test_main_page_toggle_defaults_off(self):
         state = StateDict(
             {
-                "is_processing": False,
-                "analysis_pending": False,
-                "analysis_outcome": None,
+                "is_analyzing": False,
+                "analysis_results": None,
                 "last_upload_key": None,
                 "screened_image": None,
                 "sam_result": None,
@@ -248,7 +246,17 @@ class ToggleDefaultTests(unittest.TestCase):
             app.CUSTOM_CSS,
         )
         self.assertIn(
-            "background: rgba(255, 255, 255, 0.04)", app.CUSTOM_CSS
+            "background: rgba(0, 0, 0, 0.2)", app.CUSTOM_CSS
+        )
+
+    def test_custom_css_uploader_hides_tooltip_and_lightens_subtext(self):
+        self.assertIn("stTooltipIcon", app.CUSTOM_CSS)
+        self.assertIn(
+            'div[data-testid="stFileUploader"] label button',
+            app.CUSTOM_CSS,
+        )
+        self.assertIn(
+            "color: rgba(255, 255, 255, 0.6)", app.CUSTOM_CSS
         )
 
     def test_custom_css_hides_header_and_trims_top_margin(self):
@@ -266,9 +274,8 @@ class DirectLivePipelineTests(unittest.TestCase):
         state = StateDict(
             {
                 "developer_mode": False,
-                "is_processing": True,
-                "analysis_pending": True,
-                "analysis_outcome": None,
+                "is_analyzing": True,
+                "analysis_results": None,
                 "last_upload_key": None,
                 "screened_image": None,
                 "sam_result": None,
@@ -292,6 +299,7 @@ class DirectLivePipelineTests(unittest.TestCase):
             patch.object(app, "execute_analysis", mock_execute),
             patch.object(app, "execute_live_analysis_direct", mock_direct),
             patch.object(app, "load_lottie_animation", return_value=None),
+            patch("time.sleep"),
         ):
             app.render_home(developer_mode=False)
         mock_execute.assert_not_called()
@@ -324,6 +332,27 @@ class DirectLivePipelineTests(unittest.TestCase):
             {"latitude": 48.858, "longitude": 2.295},
         )
 
+    def test_direct_forwards_on_progress_to_pipeline(self):
+        seen = []
+
+        def on_progress(percent, message):
+            seen.append((percent, message))
+
+        with patch.object(
+            app, "_run_live_pipeline_sync", return_value=wonder_payload()
+        ) as mock_run:
+            outcome = app.execute_live_analysis_direct(
+                png_upload(),
+                "riverside",
+                screener=clean_screener,
+                on_progress=on_progress,
+            )
+        self.assertEqual(outcome["kind"], "ok")
+        self.assertIs(
+            mock_run.call_args.kwargs["on_progress"], on_progress
+        )
+        self.assertEqual(seen, [])
+
     def test_direct_api_error_returns_error_outcome(self):
         from sam_segmentation import SamApiError
 
@@ -335,6 +364,29 @@ class DirectLivePipelineTests(unittest.TestCase):
             )
         self.assertEqual(outcome["kind"], "error")
         self.assertIn("down", outcome["message"])
+
+    def test_direct_dense_image_returns_friendly_message(self):
+        from sam_segmentation import (
+            DENSE_IMAGE_MESSAGE,
+            SamApiError,
+            SamDenseImageError,
+        )
+
+        for error in (
+            SamDenseImageError(DENSE_IMAGE_MESSAGE),
+            SamApiError('SAM request failed (HTTP 500): {"error": {}}'),
+        ):
+            with (
+                self.subTest(error=error),
+                patch.object(
+                    app, "_run_live_pipeline_sync", side_effect=error
+                ),
+            ):
+                outcome = app.execute_live_analysis_direct(
+                    png_upload(), "", screener=clean_screener
+                )
+            self.assertEqual(outcome["kind"], "error")
+            self.assertEqual(outcome["message"], DENSE_IMAGE_MESSAGE)
 
 
 if __name__ == "__main__":
