@@ -277,6 +277,17 @@ class ToggleDefaultTests(unittest.TestCase):
         )
         self.assertIn("padding-top: 1.5rem", app.CUSTOM_CSS)
 
+    def test_custom_css_styles_status_banners_for_contrast(self):
+        self.assertIn(
+            'div[data-testid="stAlert"] > div {', app.CUSTOM_CSS
+        )
+        self.assertIn(
+            "background: rgba(15, 23, 42, 0.72)", app.CUSTOM_CSS
+        )
+        self.assertIn(
+            'div[data-testid="stAlert"] p', app.CUSTOM_CSS
+        )
+
 
 class DirectLivePipelineTests(unittest.TestCase):
     def test_live_path_bypasses_localhost_backend(self):

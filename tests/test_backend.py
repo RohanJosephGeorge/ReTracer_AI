@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
+from analysis import mock_analysis_result
+
 from backend import (
     build_frontend_result,
     decode_upload,
@@ -143,6 +145,15 @@ class BuildFrontendResultTests(unittest.TestCase):
         self.assertEqual(
             result["coordinates"], {"latitude": None, "longitude": None}
         )
+
+    def test_mock_result_shares_frontend_shape(self):
+        live = build_frontend_result(
+            round_wonder_coordinates(wonder_payload()),
+            "memory.jpg",
+            "riverside cafes",
+        )
+        mock = mock_analysis_result("memory.jpg", "riverside cafes")
+        self.assertEqual(set(mock), set(live))
 
 
 class DecodeUploadTests(unittest.TestCase):

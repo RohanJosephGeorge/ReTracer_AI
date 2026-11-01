@@ -124,5 +124,39 @@ class SingleButtonFlowTests(unittest.TestCase):
         )
 
 
+class MockDemoModeTests(unittest.TestCase):
+    def run_home(self, dev_mode):
+        state = base_state(developer_mode=dev_mode, dev_mode=dev_mode)
+        mock_st = MagicMock()
+        mock_st.session_state = state
+        mock_st.file_uploader.return_value = None
+        mock_st.text_input.return_value = ""
+        mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
+        mock_ui = MagicMock()
+        mock_ui.button.return_value = False
+        with (
+            patch.object(app, "st", mock_st),
+            patch.object(app, "ui", mock_ui),
+        ):
+            app.render_home()
+        return mock_st
+
+    def test_dev_mode_locks_inputs_and_shows_demo_picture(self):
+        mock_st = self.run_home(True)
+        self.assertTrue(mock_st.file_uploader.call_args.kwargs["disabled"])
+        self.assertTrue(mock_st.text_input.call_args.kwargs["disabled"])
+        mock_st.image.assert_called_once_with(
+            app.MOCK_DEMO_IMAGE_PATH,
+            caption="Demo photo (mock data)",
+            width="stretch",
+        )
+
+    def test_live_mode_unlocks_inputs_and_hides_demo_picture(self):
+        mock_st = self.run_home(False)
+        self.assertFalse(mock_st.file_uploader.call_args.kwargs["disabled"])
+        self.assertFalse(mock_st.text_input.call_args.kwargs["disabled"])
+        mock_st.image.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

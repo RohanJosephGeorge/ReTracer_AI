@@ -23,7 +23,8 @@ from image_quality import has_sufficient_visual_data
 
 BACKEND_URL = os.environ.get("SPATIAL_BACKEND_URL", "http://localhost:8000")
 ANALYZE_PATH = "/analyze"
-EIFFEL_TOWER = {"latitude": 48.8584, "longitude": 2.2945}
+SETENIL_BODEGAS = {"latitude": 36.8646, "longitude": -5.1817}
+MOCK_DEMO_FILENAME = "demo-setenil-gorge.jpg"
 
 
 class AnalysisError(Exception):
@@ -38,15 +39,20 @@ def mock_analysis_result(filename: str, regional_hint: str) -> dict:
         "mode": "mock",
         "filename": filename,
         "regional_hint": hint,
+        "city": "Setenil de las Bodegas",
+        "country": "Spain",
         "reasoning_steps": [
-            "Detected wrought-iron lattice tower structure in frame.",
-            "Matched silhouette against public landmark embeddings.",
+            "Whitewashed houses built directly beneath a massive rock "
+            "overhang - a streetscape unique to Setenil de las Bodegas.",
+            "Narrow gorge lanes, olive groves, and sierra foothills "
+            "consistent with Cadiz province, Andalusia.",
             f"Cross-checked regional hint: {hint}.",
-            "Constellation of nearby rooftops consistent with Paris, FR.",
+            "La Encarnacion church silhouette and Moorish-era street "
+            "layout confirm the Guadalporcun river gorge, Spain.",
         ],
-        "precision": "Public Landmark",
-        "confidence": 0.95,
-        "coordinates": dict(EIFFEL_TOWER),
+        "precision": "Street Level",
+        "confidence": 0.93,
+        "coordinates": dict(SETENIL_BODEGAS),
     }
 
 
@@ -90,7 +96,16 @@ def execute_analysis(
 
     Returns a JSON-serializable outcome dict: {"kind": "ok", "mock": bool,
     "result": dict} on success, or {"kind": "halt"|"error", "message": str}.
+    In developer mode with no upload, returns the pre-made demo mock
+    (uploads are locked in demo mode, so there is nothing to gate).
     """
+    if uploaded_file is None and developer_mode:
+        sleeper(2)
+        return {
+            "kind": "ok",
+            "mock": True,
+            "result": mock_analysis_result(MOCK_DEMO_FILENAME, regional_hint),
+        }
     valid, message = is_valid_image(uploaded_file)
     if not valid:
         return {"kind": "halt", "message": f"Cannot analyze yet: {message}"}

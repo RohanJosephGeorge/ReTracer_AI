@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image
 
 from analysis import (
+    MOCK_DEMO_FILENAME,
     AnalysisError,
     analyze_via_backend,
     execute_analysis,
@@ -47,10 +48,12 @@ class MockResultTests(unittest.TestCase):
         result = mock_analysis_result("photo.jpg", "  ")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["mode"], "mock")
-        self.assertEqual(result["precision"], "Public Landmark")
-        self.assertEqual(result["confidence"], 0.95)
+        self.assertEqual(result["city"], "Setenil de las Bodegas")
+        self.assertEqual(result["country"], "Spain")
+        self.assertEqual(result["precision"], "Street Level")
+        self.assertEqual(result["confidence"], 0.93)
         self.assertEqual(
-            result["coordinates"], {"latitude": 48.8584, "longitude": 2.2945}
+            result["coordinates"], {"latitude": 36.8646, "longitude": -5.1817}
         )
         self.assertIsInstance(result["reasoning_steps"], list)
         self.assertGreater(len(result["reasoning_steps"]), 0)
@@ -87,7 +90,7 @@ class BackendCallTests(unittest.TestCase):
 
 
 class ExecuteAnalysisTests(unittest.TestCase):
-    def test_mock_mode_returns_ok_with_eiffel_tower(self):
+    def test_mock_mode_returns_ok_with_niche_location(self):
         outcome = execute_analysis(
             png_upload(),
             "alpine village",
@@ -99,16 +102,32 @@ class ExecuteAnalysisTests(unittest.TestCase):
         self.assertTrue(outcome["mock"])
         self.assertEqual(
             outcome["result"]["coordinates"],
-            {"latitude": 48.8584, "longitude": 2.2945},
+            {"latitude": 36.8646, "longitude": -5.1817},
         )
         self.assertEqual(outcome["result"]["filename"], "photo.png")
 
     def test_missing_file_halts(self):
         outcome = execute_analysis(
-            None, "", screener=clean_screener, sleeper=lambda s: None
+            None,
+            "",
+            developer_mode=False,
+            screener=clean_screener,
+            sleeper=lambda s: None,
         )
         self.assertEqual(outcome["kind"], "halt")
         self.assertIn("No file", outcome["message"])
+
+    def test_demo_mock_without_upload_returns_premade_result(self):
+        outcome = execute_analysis(
+            None, "", developer_mode=True, sleeper=lambda s: None
+        )
+        self.assertEqual(outcome["kind"], "ok")
+        self.assertTrue(outcome["mock"])
+        self.assertEqual(outcome["result"]["filename"], MOCK_DEMO_FILENAME)
+        self.assertEqual(
+            outcome["result"]["coordinates"],
+            {"latitude": 36.8646, "longitude": -5.1817},
+        )
 
     def test_solid_image_halts_on_quality_gate(self):
         img = Image.new("RGB", (64, 64), (200, 30, 30))

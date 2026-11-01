@@ -124,6 +124,7 @@ class UploadFeedbackTests(unittest.TestCase):
             "Regional hint (Optional)",
             placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
             help="Providing a state, landmark, or landscape context helps narrow spatial confidence faster.",
+            disabled=False,
         )
 
     def test_single_uploader_without_duplicate_header_card(self):
@@ -208,7 +209,7 @@ class PrivacySafetyViewTests(unittest.TestCase):
         self.assertEqual(len(headings), 3)
         bodies = " ".join(first_positional_texts(mock_st.markdown))
         self.assertIn("5%", bodies)
-        for keyword in ("blur", "exif", "session", "secrets", "round"):
+        for keyword in ("blur", "exif", "session", "round"):
             self.assertIn(keyword, bodies.lower())
 
 

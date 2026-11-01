@@ -245,6 +245,7 @@ BACKGROUND_IMAGE_URL = (
     "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b"
     "?auto=format&fit=crop&w=2000&q=80"
 )
+MOCK_DEMO_IMAGE_PATH = "assets/demo-setenil-gorge.jpg"
 
 CUSTOM_CSS = """
 <style>
@@ -687,6 +688,27 @@ div[data-testid="stButton"] button p {
 div[data-testid="stButton"] button:disabled {
     opacity: 0.45 !important;
     transform: none !important;
+}
+
+/* Status banners (success/info/warning/error): dark frosted glass
+   with guaranteed light-text contrast on the photographic backdrop.
+   Severity stays recognizable through Streamlit's native icon. */
+div[data-testid="stAlert"] > div {
+    background: rgba(15, 23, 42, 0.72) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.22) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4) !important;
+    padding: 0.9rem 1.1rem !important;
+}
+div[data-testid="stAlert"] p,
+div[data-testid="stAlert"] span,
+div[data-testid="stAlert"] li {
+    color: #f8fafc !important;
+}
+div[data-testid="stAlert"] a {
+    color: #7dd3fc !important;
 }
 
 /* The background track of the progress bar */
@@ -1492,14 +1514,27 @@ def render_home(developer_mode: bool = False) -> None:
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
             help="Sanitized locally with metadata removal and face blurring before spatial analysis.",
-            disabled=is_analyzing,
+            disabled=is_analyzing or developer_mode,
         )
         st.space("small")
         regional_hint = st.text_input(
             "Regional hint (Optional)",
             placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
             help="Providing a state, landmark, or landscape context helps narrow spatial confidence faster.",
+            disabled=is_analyzing or developer_mode,
         )
+        if developer_mode:
+            st.space("small")
+            st.image(
+                MOCK_DEMO_IMAGE_PATH,
+                caption="Demo photo (mock data)",
+                width="stretch",
+            )
+    if developer_mode:
+        # Demo mode ignores any retained live inputs: uploads and hints
+        # are locked, and the mock pipeline runs on the pre-made demo.
+        uploaded_file = None
+        regional_hint = ""
     st.space("small")
     _, btn_col, _ = st.columns([1, 2, 1])
     with btn_col:
@@ -1665,7 +1700,8 @@ def render_how_it_works() -> None:
         "segmentation and Muse Wonder geolocation directly via the Meta "
         "Model API.\n"
         "6. **Developer Mode**: with the toggle on, Analyze skips the API "
-        "and returns instant mock data for UI testing."
+        "and returns instant mock data for UI testing. Uploads and hints "
+        "are locked, and a pre-made demo photo is shown instead."
     )
 
 
@@ -1694,8 +1730,6 @@ def render_privacy_safety() -> None:
     )
     st.subheader("Security & compliance")
     st.markdown(
-        "- The Meta Model API key is read from Streamlit secrets "
-        "(`META_API_KEY`) and never hard-coded or logged.\n"
         "- Only screened, privacy-safe images leave the browser, and only "
         "to run segmentation and geolocation.\n"
         "- Returned coordinates are rounded before display, and precision "

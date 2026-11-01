@@ -728,7 +728,10 @@ class ResultsPersistenceTests(unittest.TestCase):
         self.assertIs(state["analysis_results"], outcome)
 
     def test_new_upload_clears_persisted_results(self):
+        # Live mode: uploads are only honored outside demo mode.
         state = clicked_state(
+            developer_mode=False,
+            dev_mode=False,
             last_upload_key="old:1",
             analysis_results={"kind": "ok", "mock": True, "result": {}},
         )
