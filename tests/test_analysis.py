@@ -48,12 +48,12 @@ class MockResultTests(unittest.TestCase):
         result = mock_analysis_result("photo.jpg", "  ")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["mode"], "mock")
-        self.assertEqual(result["city"], "Setenil de las Bodegas")
-        self.assertEqual(result["country"], "Spain")
+        self.assertEqual(result["city"], "Utrecht")
+        self.assertEqual(result["country"], "Netherlands")
         self.assertEqual(result["precision"], "Street Level")
-        self.assertEqual(result["confidence"], 0.93)
+        self.assertEqual(result["confidence"], 0.88)
         self.assertEqual(
-            result["coordinates"], {"latitude": 36.8646, "longitude": -5.1817}
+            result["coordinates"], {"latitude": 52.0907, "longitude": 5.1214}
         )
         self.assertIsInstance(result["reasoning_steps"], list)
         self.assertGreater(len(result["reasoning_steps"]), 0)
@@ -90,7 +90,7 @@ class BackendCallTests(unittest.TestCase):
 
 
 class ExecuteAnalysisTests(unittest.TestCase):
-    def test_mock_mode_returns_ok_with_niche_location(self):
+    def test_mock_mode_returns_ok_with_random_street(self):
         outcome = execute_analysis(
             png_upload(),
             "alpine village",
@@ -102,7 +102,7 @@ class ExecuteAnalysisTests(unittest.TestCase):
         self.assertTrue(outcome["mock"])
         self.assertEqual(
             outcome["result"]["coordinates"],
-            {"latitude": 36.8646, "longitude": -5.1817},
+            {"latitude": 52.0907, "longitude": 5.1214},
         )
         self.assertEqual(outcome["result"]["filename"], "photo.png")
 
@@ -126,7 +126,7 @@ class ExecuteAnalysisTests(unittest.TestCase):
         self.assertEqual(outcome["result"]["filename"], MOCK_DEMO_FILENAME)
         self.assertEqual(
             outcome["result"]["coordinates"],
-            {"latitude": 36.8646, "longitude": -5.1817},
+            {"latitude": 52.0907, "longitude": 5.1214},
         )
 
     def test_solid_image_halts_on_quality_gate(self):

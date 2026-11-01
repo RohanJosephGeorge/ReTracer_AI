@@ -245,7 +245,7 @@ BACKGROUND_IMAGE_URL = (
     "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b"
     "?auto=format&fit=crop&w=2000&q=80"
 )
-MOCK_DEMO_IMAGE_PATH = "assets/demo-setenil-gorge.jpg"
+MOCK_DEMO_IMAGE_PATH = "assets/demo-utrecht-street.jpg"
 
 CUSTOM_CSS = """
 <style>
@@ -1082,10 +1082,7 @@ def render_analysis_outcome(outcome: dict | None) -> None:
         return
     kind = outcome.get("kind")
     if kind == "ok":
-        if outcome.get("mock"):
-            st.success("Mock analysis complete (no backend call).")
-        else:
-            st.success("Analysis complete.")
+        st.success("Analysis complete.")
         render_result_dashboard(outcome.get("result", {}))
         render_result_map(outcome.get("result", {}))
     elif kind == "halt":
@@ -1434,16 +1431,20 @@ def reset_home_for_new_upload() -> None:
 
     Registered as the Refresh button's on_click callback. Widget
     callbacks fire at the start of the triggering run, so render_home
-    observes the cleared state immediately. Deleting the uploader
-    widget key also empties the file input.
+    observes the cleared state immediately. Bumping the upload epoch
+    remounts the uploader with a fresh identity (guaranteed empty),
+    and deleting the hint widget key clears its text.
     """
     st.session_state["analysis_results"] = None
     st.session_state["last_upload_key"] = None
     st.session_state["screened_image"] = None
     st.session_state["sam_result"] = None
     st.session_state["wonder_result"] = None
-    if "memory_upload" in st.session_state:
-        del st.session_state["memory_upload"]
+    st.session_state["upload_epoch"] = (
+        st.session_state.get("upload_epoch", 0) + 1
+    )
+    if "regional_hint_input" in st.session_state:
+        del st.session_state["regional_hint_input"]
 
 
 def render_home(developer_mode: bool = False) -> None:
@@ -1453,6 +1454,7 @@ def render_home(developer_mode: bool = False) -> None:
     st.session_state.setdefault("screened_image", None)
     st.session_state.setdefault("sam_result", None)
     st.session_state.setdefault("wonder_result", None)
+    st.session_state.setdefault("upload_epoch", 0)
     if "dev_mode" not in st.session_state:
         if "developer_mode" in st.session_state:
             st.session_state["dev_mode"] = st.session_state["developer_mode"]
@@ -1510,7 +1512,7 @@ def render_home(developer_mode: bool = False) -> None:
     with st.container(border=True):
         uploaded_file = st.file_uploader(
             "Upload a memory",
-            key="memory_upload",
+            key=f"memory_upload_{st.session_state["upload_epoch"]}",
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
             help="Sanitized locally with metadata removal and face blurring before spatial analysis.",
@@ -1519,6 +1521,7 @@ def render_home(developer_mode: bool = False) -> None:
         st.space("small")
         regional_hint = st.text_input(
             "Regional hint (Optional)",
+            key="regional_hint_input",
             placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
             help="Providing a state, landmark, or landscape context helps narrow spatial confidence faster.",
             disabled=is_analyzing or developer_mode,

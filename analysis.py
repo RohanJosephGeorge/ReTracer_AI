@@ -23,8 +23,8 @@ from image_quality import has_sufficient_visual_data
 
 BACKEND_URL = os.environ.get("SPATIAL_BACKEND_URL", "http://localhost:8000")
 ANALYZE_PATH = "/analyze"
-SETENIL_BODEGAS = {"latitude": 36.8646, "longitude": -5.1817}
-MOCK_DEMO_FILENAME = "demo-setenil-gorge.jpg"
+UTRECHT_STREET = {"latitude": 52.0907, "longitude": 5.1214}
+MOCK_DEMO_FILENAME = "demo-utrecht-street.jpg"
 
 
 class AnalysisError(Exception):
@@ -39,20 +39,20 @@ def mock_analysis_result(filename: str, regional_hint: str) -> dict:
         "mode": "mock",
         "filename": filename,
         "regional_hint": hint,
-        "city": "Setenil de las Bodegas",
-        "country": "Spain",
+        "city": "Utrecht",
+        "country": "Netherlands",
         "reasoning_steps": [
-            "Whitewashed houses built directly beneath a massive rock "
-            "overhang - a streetscape unique to Setenil de las Bodegas.",
-            "Narrow gorge lanes, olive groves, and sierra foothills "
-            "consistent with Cadiz province, Andalusia.",
+            "Yellow rear plates with blue EU bands narrow the country "
+            "to the Netherlands.",
+            "Brick rowhouses with tall narrow windows and a red bike "
+            "lane match Utrecht's residential districts.",
             f"Cross-checked regional hint: {hint}.",
-            "La Encarnacion church silhouette and Moorish-era street "
-            "layout confirm the Guadalporcun river gorge, Spain.",
+            "Plane trees, parked city bikes, and overcast northern "
+            "light confirm an ordinary Dutch city street.",
         ],
         "precision": "Street Level",
-        "confidence": 0.93,
-        "coordinates": dict(SETENIL_BODEGAS),
+        "confidence": 0.88,
+        "coordinates": dict(UTRECHT_STREET),
     }
 
 

@@ -723,7 +723,7 @@ class ResultsPersistenceTests(unittest.TestCase):
         mock_execute.assert_not_called()
         mock_st.empty.assert_not_called()
         mock_st.success.assert_called_once_with(
-            "Mock analysis complete (no backend call)."
+            "Analysis complete."
         )
         self.assertIs(state["analysis_results"], outcome)
 
@@ -782,8 +782,9 @@ class ResultsPersistenceTests(unittest.TestCase):
             screened_image=sentinel,
             sam_result=sentinel,
             wonder_result=sentinel,
+            upload_epoch=0,
         )
-        state["memory_upload"] = sentinel
+        state["regional_hint_input"] = "old hint"
         mock_st = MagicMock()
         mock_st.session_state = state
         with patch.object(app, "st", mock_st):
@@ -796,7 +797,8 @@ class ResultsPersistenceTests(unittest.TestCase):
             "wonder_result",
         ):
             self.assertIsNone(state[key])
-        self.assertNotIn("memory_upload", state)
+        self.assertEqual(state["upload_epoch"], 1)
+        self.assertNotIn("regional_hint_input", state)
 
 
 if __name__ == "__main__":
