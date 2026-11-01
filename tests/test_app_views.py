@@ -162,6 +162,7 @@ class UploadFeedbackTests(unittest.TestCase):
         mock_st = self.run_home_with_clean_upload()
         mock_st.file_uploader.assert_called_once_with(
             "Upload a memory",
+            key="memory_upload",
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
             help="Sanitized locally with metadata removal and face blurring before spatial analysis.",
@@ -183,6 +184,8 @@ class HowItWorksViewTests(unittest.TestCase):
             "Developer Mode",
         ):
             self.assertIn(stage, diagrams[0])
+        for styling in ("classDef", "linkStyle"):
+            self.assertIn(styling, diagrams[0])
 
     def test_explains_each_stage(self):
         mock_st = render_with_mock_st(app.render_how_it_works)

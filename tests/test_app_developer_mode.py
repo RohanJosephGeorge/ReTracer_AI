@@ -108,7 +108,12 @@ class SingleButtonFlowTests(unittest.TestCase):
             app.render_home()
         for call in mock_st.subheader.call_args_list:
             self.assertNotIn("SAM 3.1", call.args[0])
-        mock_st.button.assert_not_called()
+        # The only st.button on Home is the Refresh reset; no legacy
+        # per-section buttons may reappear.
+        self.assertEqual(len(mock_st.button.call_args_list), 1)
+        self.assertIn(
+            "Refresh", mock_st.button.call_args_list[0].args[0]
+        )
         mock_ui.button.assert_called_once_with(
             "Analyze Memory",
             key="analyze_btn",

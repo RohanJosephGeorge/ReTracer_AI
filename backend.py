@@ -1,4 +1,4 @@
-"""FastAPI backend for SpatialGeoGuesser: /analyze endpoint.
+"""FastAPI backend for ReTracer AI: /analyze endpoint.
 
 Receives the privacy-screened upload from the Streamlit frontend (see
 analysis.analyze_via_backend), runs the visual-data gate, SAM 3.1
@@ -137,7 +137,7 @@ def get_backend_api_key() -> str:
 
 if FastAPI is not None:
 
-    app = FastAPI(title="SpatialGeoGuesser backend")
+    app = FastAPI(title="ReTracer AI backend")
 
     class AnalyzeRequest(BaseModel):
         filename: str

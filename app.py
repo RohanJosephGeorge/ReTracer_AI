@@ -1,4 +1,4 @@
-"""Basic SpatialGeoGuesser upload app."""
+"""Basic ReTracer AI upload app."""
 
 import asyncio
 import html
@@ -76,7 +76,7 @@ LOTTIE_SEARCH_EMPTY_URL = (
 )
 LOTTIE_FETCH_TIMEOUT = 10.0
 LOTTIE_TINT_RGB = (0.0, 1.0, 170 / 255)
-"""Neon accent (#00FFAA) as Lottie 0-1 RGB floats."""
+# Neon accent (#00FFAA) as Lottie 0-1 RGB floats.
 
 
 def _is_lottie_payload(data) -> bool:
@@ -210,7 +210,7 @@ SAM_TICK_MESSAGES = (
     "Cataloguing every visible clue and pattern...",
 )
 WONDER_TICK_MESSAGES = (
-    "Muse Wonder is now working as Sherlock Holmes...",
+    "ReTracer AI is now on the case...",
     "Cross-referencing global architectural patterns...",
     "Triangulating position from every available cue...",
     "Weighing natural versus built-environment signals...",
@@ -218,7 +218,6 @@ WONDER_TICK_MESSAGES = (
     "Running multi-hypothesis spatial triangulation...",
     "Eliminating false leads and impossible biomes...",
     "Connecting the dots on a digital corkboard...",
-    "Playing a high-stakes game of AI GeoGuessr...",
     "Piecing together the final coordinates...",
     "Narrowing down the regional radius...",
     "Zeroing in on the exact coordinates...",
@@ -655,27 +654,39 @@ div[data-testid="stTextInput"] input::placeholder {
     color: rgba(255, 255, 255, 0.5) !important;
 }
 
-/* Centered Full-Width Action Button */
-div.stButton {
+/* Frosted-glass action buttons that sit on the dark backdrop */
+div[data-testid="stButton"] {
     display: flex !important;
     justify-content: center !important;
     margin-top: 1.5rem !important;
 }
-div.stButton > button {
-    background: rgba(255, 255, 255, 0.9) !important;
-    color: #0f172a !important;
-    font-weight: 700 !important;
+div[data-testid="stButton"] button {
+    background: rgba(15, 23, 42, 0.6) !important;
+    color: #f8fafc !important;
+    font-weight: 600 !important;
     border-radius: 30px !important;
-    padding: 0.75rem 3rem !important;
-    font-size: 1rem !important;
+    padding: 0.5rem 1rem !important;
+    white-space: nowrap !important;
+    font-size: 0.875rem !important;
     transition: all 0.3s ease !important;
-    border: none !important;
-    box-shadow: 0 4px 20px rgba(255, 255, 255, 0.2) !important;
+    border: 1px solid rgba(255, 255, 255, 0.25) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35) !important;
 }
-div.stButton > button:hover {
-    background: #ffffff !important;
+div[data-testid="stButton"] button:hover {
+    background: rgba(30, 41, 59, 0.75) !important;
+    border-color: rgba(255, 255, 255, 0.45) !important;
+    color: #ffffff !important;
     transform: translateY(-2px) scale(1.02) !important;
-    box-shadow: 0 8px 25px rgba(255, 255, 255, 0.35) !important;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.45) !important;
+}
+div[data-testid="stButton"] button p {
+    color: inherit !important;
+}
+div[data-testid="stButton"] button:disabled {
+    opacity: 0.45 !important;
+    transform: none !important;
 }
 
 /* The background track of the progress bar */
@@ -1396,6 +1407,23 @@ def start_analysis() -> None:
     st.session_state["analysis_results"] = None
 
 
+def reset_home_for_new_upload() -> None:
+    """Clear persisted Home state so the user can upload another picture.
+
+    Registered as the Refresh button's on_click callback. Widget
+    callbacks fire at the start of the triggering run, so render_home
+    observes the cleared state immediately. Deleting the uploader
+    widget key also empties the file input.
+    """
+    st.session_state["analysis_results"] = None
+    st.session_state["last_upload_key"] = None
+    st.session_state["screened_image"] = None
+    st.session_state["sam_result"] = None
+    st.session_state["wonder_result"] = None
+    if "memory_upload" in st.session_state:
+        del st.session_state["memory_upload"]
+
+
 def render_home(developer_mode: bool = False) -> None:
     st.session_state.setdefault("is_analyzing", False)
     st.session_state.setdefault("analysis_results", None)
@@ -1413,11 +1441,21 @@ def render_home(developer_mode: bool = False) -> None:
     developer_mode = bool(st.session_state["dev_mode"])
     is_analyzing = st.session_state["is_analyzing"]
 
+    _, _, top_right = st.columns([4, 1, 1])
+    with top_right:
+        st.button(
+            ":material/refresh: Refresh",
+            key="reset_home_btn",
+            disabled=is_analyzing,
+            on_click=reset_home_for_new_upload,
+            help="Clear the current result and upload another picture.",
+        )
+
     st.markdown(
         """
         <div style="text-align: center; padding: 2.5rem 0 1.5rem 0;">
             <p style="text-transform: uppercase; letter-spacing: 0.25em; font-size: 0.8rem; color: rgba(255,255,255,0.7); margin-bottom: 0.5rem;">Spatial Reasoning Engine</p>
-            <h1 style="font-size: 3.5rem; margin-bottom: 0.5rem;">SpatialGeoguesser</h1>
+            <h1 style="font-size: 3.5rem; margin-bottom: 0.5rem;">ReTracer AI</h1>
             <p style="font-size: 1.05rem; color: rgba(255,255,255,0.8); max-width: 600px; margin: 0 auto; font-weight: 300;">
                 Privacy-first multi-hypothesis spatial triangulation powered by SAM 3.1 and Muse Wonder.
             </p>
@@ -1450,6 +1488,7 @@ def render_home(developer_mode: bool = False) -> None:
     with st.container(border=True):
         uploaded_file = st.file_uploader(
             "Upload a memory",
+            key="memory_upload",
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
             help="Sanitized locally with metadata removal and face blurring before spatial analysis.",
@@ -1564,7 +1603,14 @@ def render_home(developer_mode: bool = False) -> None:
         if uploaded_file is not None
         else None
     )
-    if st.session_state["last_upload_key"] != upload_key:
+    # Only a newly arrived upload clears persisted results. Returning
+    # to Home from another view remounts an empty uploader (upload_key
+    # None), which must leave the finished result untouched; the
+    # Refresh button is the explicit way to clear it.
+    if (
+        upload_key is not None
+        and st.session_state["last_upload_key"] != upload_key
+    ):
         st.session_state["last_upload_key"] = upload_key
         st.session_state["analysis_results"] = None
         st.session_state["screened_image"] = None
@@ -1576,16 +1622,28 @@ def render_home(developer_mode: bool = False) -> None:
 
 PIPELINE_DIAGRAM = """```mermaid
 flowchart LR
-    A["Upload photo"] --> B["Validate + strip metadata"]
+    A(["Upload photo"]) --> B["Validate + strip metadata"]
     B --> C["Visual-data gate"]
-    C --> D["Face screening"]
-    D -->|"Face > 5%: reject"| X["Halt with message"]
+    C --> D{"Face screening"}
+    D -->|"Face > 5%: reject"| X(["Halt with message"])
     D -->|"Clean or blurred"| E["SAM 3.1 segmentation"]
     E --> F["Wonder reasoning + hint"]
     F --> G["Round + build result"]
-    G --> H["Metrics + map"]
+    G --> H(["Metrics + map"])
     B -.->|"Developer Mode"| M["Mock result"]
     M --> H
+
+    classDef endpoint fill:#00FFAA,stroke:#00FFAA,color:#0B1220,font-weight:bold;
+    classDef stage fill:#1E1E1E,stroke:#64748B,stroke-width:1.5px,color:#F8FAFC;
+    classDef ai fill:#10201A,stroke:#00FFAA,stroke-width:2px,color:#A7F3D0;
+    classDef halt fill:#2A1215,stroke:#F87171,stroke-width:2px,color:#FECACA;
+    classDef dev fill:#1E1E1E,stroke:#FBBF24,stroke-width:1.5px,stroke-dasharray:6 3,color:#FDE68A;
+    class A,H endpoint;
+    class B,C,D,G stage;
+    class E,F ai;
+    class X halt;
+    class M dev;
+    linkStyle default stroke:#94A3B8,stroke-width:2px;
 ```"""
 
 
@@ -1649,7 +1707,7 @@ def render_privacy_safety() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="SpatialGeoGuesser", layout="centered")
+    st.set_page_config(page_title="ReTracer AI", layout="centered")
     inject_heading_styles()
 
     _, nav_col, _ = st.columns([1, 3, 1])

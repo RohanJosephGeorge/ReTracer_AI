@@ -117,8 +117,11 @@ class ToggleDefaultTests(unittest.TestCase):
         mock_st.toggle.assert_called_once_with(
             "Developer Mode (Use Mock Data)", value=False, key="dev_mode"
         )
-        self.assertEqual(mock_st.columns.call_count, 2)
-        for call in mock_st.columns.call_args_list:
+        self.assertEqual(mock_st.columns.call_count, 3)
+        self.assertEqual(
+            mock_st.columns.call_args_list[0].args, ([4, 1, 1],)
+        )
+        for call in mock_st.columns.call_args_list[1:]:
             self.assertEqual(call.args, ([1, 2, 1],))
         mock_st.sidebar.toggle.assert_not_called()
 
@@ -226,7 +229,13 @@ class ToggleDefaultTests(unittest.TestCase):
             app.CUSTOM_CSS,
         )
         self.assertIn(
-            "background: rgba(255, 255, 255, 0.9)", app.CUSTOM_CSS
+            "background: rgba(15, 23, 42, 0.6)", app.CUSTOM_CSS
+        )
+        self.assertIn(
+            'div[data-testid="stButton"] button {', app.CUSTOM_CSS
+        )
+        self.assertIn(
+            "color: #f8fafc", app.CUSTOM_CSS
         )
 
     def test_custom_css_styles_inner_dropzone_button(self):

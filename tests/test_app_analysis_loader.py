@@ -79,15 +79,19 @@ class MilestoneConstantTests(unittest.TestCase):
             app.SAM_TICK_MESSAGES[-1],
             "Cataloguing every visible clue and pattern...",
         )
-        self.assertEqual(len(app.WONDER_TICK_MESSAGES), 14)
+        self.assertEqual(len(app.WONDER_TICK_MESSAGES), 13)
         self.assertEqual(
             app.WONDER_TICK_MESSAGES[0],
-            "Muse Wonder is now working as Sherlock Holmes...",
+            "ReTracer AI is now on the case...",
         )
         self.assertEqual(
             app.WONDER_TICK_MESSAGES[-1],
             "Preparing the final spatial verdict...",
         )
+        for message in (
+            app.SAM_TICK_MESSAGES + app.WONDER_TICK_MESSAGES
+        ):
+            self.assertNotIn("geoguessr", message.lower())
 
     def test_timer_loader_is_gone(self):
         for name in (
@@ -310,7 +314,7 @@ class AwaitWonderFutureTests(unittest.TestCase):
         self.assertEqual(
             events,
             [
-                (47, "Muse Wonder is now working as Sherlock Holmes..."),
+                (47, "ReTracer AI is now on the case..."),
                 (48, "Cross-referencing global architectural patterns..."),
             ],
         )
@@ -329,8 +333,8 @@ class AwaitWonderFutureTests(unittest.TestCase):
                 StubFuture([False] * 32 + [True], result={"ok": True}),
                 on_progress,
             )
-        expected_messages = list(app.WONDER_TICK_MESSAGES[:14]) + list(
-            app.WONDER_TICK_MESSAGES[:2]
+        expected_messages = list(app.WONDER_TICK_MESSAGES[:13]) + list(
+            app.WONDER_TICK_MESSAGES[:3]
         )
         self.assertEqual(
             events, list(zip(range(46, 62), expected_messages))
@@ -598,9 +602,9 @@ class LockedProgressTests(unittest.TestCase):
         )
         self.assertEqual(shown_bar_values(slot), [0, 100])
         report = mock_direct.call_args.kwargs["on_progress"]
-        report(46, "Muse Wonder is now working as Sherlock Holmes...")
+        report(46, "ReTracer AI is now on the case...")
         self.assertIn(
-            "46% - Muse Wonder is now working as Sherlock Holmes...",
+            "46% - ReTracer AI is now on the case...",
             shown_status_texts(slot)[-1],
         )
         self.assertEqual(shown_bar_values(slot)[-1], 46)
@@ -682,10 +686,10 @@ class LockedProgressTests(unittest.TestCase):
 
 
 class ResultsPersistenceTests(unittest.TestCase):
-    def run_home(self, state, clicked):
+    def run_home(self, state, clicked, uploaded_file=None):
         mock_st = MagicMock()
         mock_st.session_state = state
-        mock_st.file_uploader.return_value = None
+        mock_st.file_uploader.return_value = uploaded_file
         mock_st.text_input.return_value = ""
         mock_st.columns.return_value = (
             MagicMock(),
@@ -728,9 +732,68 @@ class ResultsPersistenceTests(unittest.TestCase):
             last_upload_key="old:1",
             analysis_results={"kind": "ok", "mock": True, "result": {}},
         )
-        mock_st, _ = self.run_home(state, clicked=False)
+        new_file = MagicMock()
+        new_file.name = "new.jpg"
+        new_file.size = 2
+        with patch.object(
+            app, "is_valid_image", return_value=(False, "invalid upload")
+        ):
+            mock_st, _ = self.run_home(
+                state, clicked=False, uploaded_file=new_file
+            )
         self.assertIsNone(state["analysis_results"])
+        self.assertEqual(state["last_upload_key"], "new.jpg:2")
         mock_st.empty.assert_not_called()
+
+    def test_empty_uploader_keeps_persisted_results(self):
+        # Returning to Home from another view remounts an empty
+        # uploader; the finished result must survive the round trip.
+        outcome = {"kind": "ok", "mock": True, "result": {}}
+        state = clicked_state(
+            last_upload_key="old:1", analysis_results=outcome
+        )
+        mock_st, _ = self.run_home(state, clicked=False)
+        self.assertIs(state["analysis_results"], outcome)
+        self.assertEqual(state["last_upload_key"], "old:1")
+        mock_st.empty.assert_not_called()
+
+    def test_refresh_button_wired_to_reset_callback(self):
+        state = clicked_state()
+        mock_st, _ = self.run_home(state, clicked=False)
+        reset_calls = [
+            call
+            for call in mock_st.button.call_args_list
+            if call.args and "Refresh" in call.args[0]
+        ]
+        self.assertEqual(len(reset_calls), 1)
+        self.assertIs(
+            reset_calls[0].kwargs["on_click"],
+            app.reset_home_for_new_upload,
+        )
+
+    def test_reset_callback_clears_home_state(self):
+        sentinel = object()
+        state = clicked_state(
+            last_upload_key="old:1",
+            analysis_results={"kind": "ok"},
+            screened_image=sentinel,
+            sam_result=sentinel,
+            wonder_result=sentinel,
+        )
+        state["memory_upload"] = sentinel
+        mock_st = MagicMock()
+        mock_st.session_state = state
+        with patch.object(app, "st", mock_st):
+            app.reset_home_for_new_upload()
+        for key in (
+            "analysis_results",
+            "last_upload_key",
+            "screened_image",
+            "sam_result",
+            "wonder_result",
+        ):
+            self.assertIsNone(state[key])
+        self.assertNotIn("memory_upload", state)
 
 
 if __name__ == "__main__":
