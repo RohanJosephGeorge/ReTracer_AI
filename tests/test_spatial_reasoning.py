@@ -28,6 +28,7 @@ from spatial_reasoning import (
     PRECISION_LEVELS,
     REQUIRED_KEYS,
     REASONING_EFFORT,
+    SYSTEM_DIRECTIVE,
     TEXT_ANCHOR_INSTRUCTION,
     TRANSIT_TAXONOMY,
     TRIANGULATION_HEURISTICS,
@@ -218,6 +219,52 @@ class AggressivePromptTests(unittest.TestCase):
         )
 
 
+class NaturalDirectiveTests(unittest.TestCase):
+    def test_system_directive_is_verbatim(self):
+        self.assertEqual(
+            SYSTEM_DIRECTIVE,
+            "You are Sherlock Holmes examining the scene of a photograph. "
+            "Perform an exhaustive spatial deduction from the visual "
+            "evidence: weigh 3 competing geographic hypotheses, "
+            "cross-examine each one's flaws in plain words, and declare a "
+            "final coordinate with calibrated confidence. Write concise, "
+            "natural English sentences a curious reader can follow: no "
+            "abbreviations (never Hyp, Evd, Elim), no arrows, no Matrix: "
+            "or code-like labels, no robotic fragments. Spend your limited "
+            "words on the most decisive clues first: legible text and "
+            "signage, then architecture and infrastructure, then "
+            "vegetation, soil, and light. Deliver maximum 'Sherlock "
+            "Holmes' analytical depth at minimum word count.",
+        )
+
+    def test_prompt_leads_with_directive(self):
+        prompt = build_spatial_prompt([], "x")
+        self.assertTrue(prompt.startswith(SYSTEM_DIRECTIVE))
+        for phrase in (
+            "cross-examine",
+            "Sherlock Holmes",
+            "natural English sentences",
+            "no abbreviations",
+            "never Hyp, Evd, Elim",
+            "decisive clues first",
+            "minimum word count",
+        ):
+            self.assertIn(phrase, prompt)
+
+    def test_prompt_bans_robotic_shorthand(self):
+        prompt = build_spatial_prompt(sample_summary(), "riverside cafes")
+        for token in (
+            "telegraphic",
+            "'Evd'",
+            "'Hyp'",
+            "(->)",
+            "HypA",
+            "Elim:",
+            "evidence matrix",
+        ):
+            self.assertNotIn(token, prompt)
+
+
 class ParseTests(unittest.TestCase):
     def test_valid_payload_passes_through(self):
         self.assertEqual(parse_reasoning_result(json.dumps(good_payload())),
@@ -385,6 +432,15 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         sent = body["input"][0]["content"][0]["text"]
         self.assertIn("riverside cafes", sent)
         self.assertIn("reasoning_steps", sent)
+        self.assertIn(SYSTEM_DIRECTIVE, sent)
+
+    async def test_reason_makes_single_pass(self):
+        session = FakeSession(
+            FakeJsonResponse(payload=responses_json(json.dumps(good_payload())))
+        )
+        reasoner = SpatialReasoner(api_key="k", session=session)
+        await reasoner.reason(sample_summary(), "riverside cafes")
+        self.assertEqual(len(session.calls), 1)
 
     async def test_model_override_honored(self):
         session = FakeSession(
@@ -587,8 +643,8 @@ class MultiHypothesisPromptTests(unittest.TestCase):
         for phrase in (
             "3 distinct candidate",
             "Candidate A",
-            "evidence matrix",
-            "eliminate",
+            "weigh every candidate",
+            "rule out",
             "confidence weighting",
             "geographic center",
         ):
@@ -597,7 +653,8 @@ class MultiHypothesisPromptTests(unittest.TestCase):
     def test_reasoning_steps_spec_requires_hypothesis_trace(self):
         prompt = build_spatial_prompt([], "hint")
         self.assertIn("candidates", prompt)
-        self.assertIn("elimination", prompt)
+        self.assertIn("ruled out", prompt)
+        self.assertIn("plain natural sentences", prompt)
 
     def test_handler_passes_multi_candidate_response_through(self):
         response = {
@@ -606,11 +663,11 @@ class MultiHypothesisPromptTests(unittest.TestCase):
             "city": "Alappuzha",
             "country": "India",
             "reasoning_steps": [
-                "Candidate A: Alappuzha, Kerala; Candidate B: Mangalore, "
-                "Karnataka; Candidate C: Goa.",
-                "Evidence matrix: laterite soil and coconut palms fit A; "
-                "driving side eliminates C.",
-                "Winner: Candidate A with 0.62 confidence weighting.",
+                "Three candidates emerged: Alappuzha in Kerala, Mangalore "
+                "in Karnataka, and Goa.",
+                "Laterite soil and coconut palms fit Alappuzha best, while "
+                "the driving side ruled Goa out.",
+                "Alappuzha won with a confidence weighting of 0.62.",
                 "Centroid fixed on the Alappuzha district center.",
             ],
             "confidence_score": 0.62,

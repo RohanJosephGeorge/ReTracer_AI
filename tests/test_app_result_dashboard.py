@@ -69,6 +69,65 @@ class FormatHelpersTests(unittest.TestCase):
         )
 
 
+class HumanizeStepTests(unittest.TestCase):
+    def test_rewrites_telegraphic_lines_as_sentences(self):
+        cases = [
+            (
+                "Hyp B -> ELIMINATED, biome clash",
+                "Hypothesis B was eliminated: biome clash.",
+            ),
+            ("Hyp B -> ELIMINATED", "Hypothesis B was eliminated."),
+            (
+                "Evd: flora + soil back Hyp C",
+                "Evidence from flora and soil supports Hypothesis C.",
+            ),
+            (
+                "X-exam: Hyp A flaws probed",
+                "Cross-examination probed the flaws in Hypothesis A.",
+            ),
+            (
+                "Hyp C survives -> weighting conf",
+                "Hypothesis C survives, which leads to weighting confidence.",
+            ),
+            (
+                "VERDICT LOCKED -> location declared",
+                "Verdict locked: location declared.",
+            ),
+            ("Hyps A/B/C weighed", "Hypotheses A/B/C weighed."),
+            ("Evd: plates", "Evidence: plates."),
+            ("Evds banked", "Evidence banked."),
+            ("X-exam: flaws", "Cross-examination: flaws."),
+            ("X-check: tiles", "Cross-check: tiles."),
+            ("weighting conf", "Weighting confidence."),
+            ("Coords set", "Coordinates set."),
+            ("- Hyp B -> ELIMINATED", "Hypothesis B was eliminated."),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(app.humanize_reasoning_step(raw), expected)
+
+    def test_leaves_full_words_intact_with_light_polish(self):
+        self.assertEqual(
+            app.humanize_reasoning_step(
+                "Hypothesis and confidence and coordinates stand"
+            ),
+            "Hypothesis and confidence and coordinates stand.",
+        )
+        self.assertEqual(
+            app.humanize_reasoning_step(
+                "Detected wrought-iron lattice tower structure in frame."
+            ),
+            "Detected wrought-iron lattice tower structure in frame.",
+        )
+        self.assertEqual(
+            app.humanize_reasoning_step("X-examination complete"),
+            "X-examination complete.",
+        )
+
+    def test_coerces_non_strings(self):
+        self.assertEqual(app.humanize_reasoning_step(42), "42")
+
+
 class ResultDashboardTests(unittest.TestCase):
     def render(self, result):
         mock_st = MagicMock()
@@ -97,6 +156,25 @@ class ResultDashboardTests(unittest.TestCase):
         self.assertNotIn('"reasoning_steps"', html)
         self.assertNotIn('{"status"', html)
         self.assertNotIn("[", html.split("deduction-timeline")[1])
+
+    def test_timeline_expands_telegraphic_shorthand(self):
+        html = dashboard_html(
+            self.render(
+                live_result(
+                    reasoning_steps=[
+                        "Hyp B -> ELIMINATED, biome clash",
+                        "Evd: flora + soil back Hyp C",
+                    ]
+                )
+            )
+        )
+        self.assertIn("Hypothesis B was eliminated: biome clash.", html)
+        self.assertIn(
+            "Evidence from flora and soil supports Hypothesis C.", html
+        )
+        self.assertNotIn("Hyp B", html)
+        self.assertNotIn("->", html)
+        self.assertNotIn("Evd:", html)
 
     def test_coordinates_caption_shown(self):
         html = dashboard_html(self.render(live_result()))

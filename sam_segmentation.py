@@ -1,9 +1,13 @@
 """Async SAM 3.1 segmentation through Meta Model API.
 
-Sends the full-resolution upload (never resized) to the documented
-OpenAI-compatible Responses endpoint with one concept phrase per request,
-streams the output-text lane, and decodes segmentation masks with the
-official meta_sam_parser package.
+Sends the full-resolution upload (never resized) plus a 2x2 grid of
+quadrant crops to the documented OpenAI-compatible Responses endpoint
+with one concept phrase per request per tile, streams the output-text
+lane, and decodes segmentation masks with the official meta_sam_parser
+package. Quadrant boxes are remapped to full-frame pixels so the
+aggregated mask list carries both macro-architecture and micro-details.
+At most five requests run concurrently, and only masks scoring above
+0.90 confidence aggregate into the result.
 
 Contract sources (verified 2026-10-27):
 - POST {base_url}/responses, model="sam-3.1", input_text + input_image
@@ -102,6 +106,11 @@ DENSE_IMAGE_MESSAGE = (
     "The image is too dense for spatial processing. "
     "Please try a different memory."
 )
+FULL_TILE_NAME = "full"
+GRID_TILE_NAMES = ("top-left", "top-right", "bottom-left", "bottom-right")
+MAX_TILE_PAYLOADS = 5
+MAX_CONCURRENT_SAM_REQUESTS = 5
+MIN_MASK_CONFIDENCE = 0.90
 
 
 class SamApiError(Exception):
@@ -243,6 +252,112 @@ def encode_fallback_data_url(image: Image.Image | bytes) -> str:
             resized = downscale_to_long_edge(opened.convert("RGB"))
     data = encode_png_bytes(resized)
     return f"data:image/png;base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def slice_grid_tiles(
+    image: Image.Image,
+) -> list[tuple[str, Image.Image, tuple[int, int]]]:
+    """Split an image into a 2x2 grid of non-overlapping quadrants.
+
+    Returns one (name, crop, origin) tuple per quadrant, where origin is
+    the (x0, y0) full-frame offset of the crop. Odd dimensions give the
+    right and bottom tiles the extra pixel so coverage stays complete;
+    degenerate (zero-area) tiles on tiny images are skipped.
+    """
+    width, height = image.size
+    mid_x, mid_y = width // 2, height // 2
+    geometry = (
+        (0, 0, mid_x, mid_y),
+        (mid_x, 0, width, mid_y),
+        (0, mid_y, mid_x, height),
+        (mid_x, mid_y, width, height),
+    )
+    tiles = []
+    for name, (x0, y0, x1, y1) in zip(GRID_TILE_NAMES, geometry):
+        if x1 <= x0 or y1 <= y0:
+            continue
+        tiles.append((name, image.crop((x0, y0, x1, y1)), (x0, y0)))
+    return tiles
+
+
+def encode_quadrant_data_urls(
+    image: Image.Image,
+) -> list[tuple[str, str, tuple[int, int]]]:
+    """Slice the 2x2 grid and PNG-encode each quadrant as a data URL.
+
+    Returns one (name, data_url, origin) tuple per quadrant, in
+    top-left, top-right, bottom-left, bottom-right order.
+    """
+    return [
+        (
+            name,
+            "data:image/png;base64,"
+            f"{base64.b64encode(encode_png_bytes(crop)).decode('ascii')}",
+            origin,
+        )
+        for name, crop, origin in slice_grid_tiles(image)
+    ]
+
+
+def offset_box_to_full_frame(
+    box: dict | None, origin: tuple[int, int]
+) -> dict | None:
+    """Translate a quadrant-pixel box into full-frame pixel coordinates.
+
+    Returns the box unchanged when it is missing, incomplete, or
+    non-numeric (downstream formatters already handle those cases).
+    """
+    if not isinstance(box, dict):
+        return box
+    try:
+        left, top, right, bottom = (
+            box["left"],
+            box["top"],
+            box["right"],
+            box["bottom"],
+        )
+    except KeyError:
+        return box
+    if not all(_is_finite_number(v) for v in (left, top, right, bottom)):
+        return box
+    offset_x, offset_y = origin
+    return {
+        "left": left + offset_x,
+        "top": top + offset_y,
+        "right": right + offset_x,
+        "bottom": bottom + offset_y,
+    }
+
+
+def passes_confidence_filter(mask: dict) -> bool:
+    """True when the mask scores strictly above 0.90 confidence.
+
+    Missing or non-numeric confidences fail closed: only positively
+    high-confidence masks aggregate into the Wonder payload.
+    """
+    confidence = mask.get("confidence")
+    return _is_finite_number(confidence) and confidence > MIN_MASK_CONFIDENCE
+
+
+def assemble_tile_payloads(frame_url, quadrants) -> list:
+    """Assemble the full frame plus quadrant payloads (hard-capped at 5).
+
+    Raises SamApiError if assembly would exceed MAX_TILE_PAYLOADS, so no
+    recursive or dynamic windowing can ever widen the batch.
+    """
+    payloads = [(FULL_TILE_NAME, frame_url, None)] + list(quadrants)
+    if len(payloads) > MAX_TILE_PAYLOADS:
+        raise SamApiError(
+            f"Tile fan-out exceeded {MAX_TILE_PAYLOADS} payloads; refusing."
+        )
+    return payloads
+
+
+def _decode_rgb_image(data: bytes) -> Image.Image:
+    """Decode raw image bytes to RGB so the frame can be sliced."""
+    with Image.open(io.BytesIO(data)) as opened:
+        opened.load()
+        return opened.convert("RGB")
 
 
 def select_latest_masks(records: Sequence) -> list:
@@ -439,18 +554,24 @@ def format_visual_breakdown(sam_masks) -> str:
 
 
 def summarize_masks(result: dict | None) -> list[dict]:
-    """Build a JSON-safe summary of segmentation masks (no raster bytes)."""
+    """Build a JSON-safe summary of segmentation masks (no raster bytes).
+
+    Each entry carries its concept, tile ("full" for the whole frame),
+    and box expressed in full-frame pixels with the matching frame
+    dimensions, so quadrant micro-details stay globally positioned.
+    """
     summaries = []
     for mask in (result or {}).get("masks", []):
         info = mask.get("mask", {})
         summaries.append(
             {
                 "concept": mask.get("concept"),
+                "tile": mask.get("tile", FULL_TILE_NAME),
                 "object_id": mask.get("object_id"),
                 "confidence": mask.get("confidence"),
                 "box": mask.get("box"),
-                "width": info.get("width"),
-                "height": info.get("height"),
+                "width": mask.get("frame_width") or info.get("width"),
+                "height": mask.get("frame_height") or info.get("height"),
                 "pixel_count": info.get("pixel_count"),
             }
         )
@@ -482,10 +603,13 @@ def draw_mask_boxes(
 class SamSegmenter:
     """Async client for SAM 3.1 concept segmentation.
 
-    One API request is issued per concept phrase (the documented contract
-    takes a single coherent phrase per request); independent concepts run
-    concurrently. Images are first sent at full resolution; on HTTP 500
-    the batch is retried once with the longest edge capped at 1024px.
+    One API request is issued per concept phrase per image tile: the
+    documented contract takes a single coherent phrase per request, so
+    each tile (full frame plus 2x2 grid quadrants) fans out over all
+    concepts, and independent pairs run concurrently with at most 5
+    requests in flight at any moment. Images are first
+    sent at full resolution; on HTTP 500 the batch is retried once with
+    the frame downscaled so its longest edge is capped at 1024px.
     """
 
     def __init__(
@@ -496,7 +620,7 @@ class SamSegmenter:
         model: str = DEFAULT_MODEL,
         mask_encoding: str = "one_bit",
         timeout: float = 120.0,
-        max_concurrency: int = 3,
+        max_concurrency: int = MAX_CONCURRENT_SAM_REQUESTS,
         session: aiohttp.ClientSession | None = None,
         retrying: AsyncRetrying | None = None,
         on_retry: Callable[[int, float], None] | None = None,
@@ -516,7 +640,9 @@ class SamSegmenter:
         self._model = model
         self._mask_encoding = mask_encoding
         self._timeout = timeout
-        self._max_concurrency = max(1, max_concurrency)
+        self._max_concurrency = min(
+            MAX_CONCURRENT_SAM_REQUESTS, max(1, max_concurrency)
+        )
         self._injected_session = session
         self._owned_session: aiohttp.ClientSession | None = None
         self._retrying_override = retrying
@@ -677,18 +803,31 @@ class SamSegmenter:
         image: Image.Image | bytes,
         concepts: str | Sequence[str] = FOCUS_CONCEPTS,
     ) -> dict:
-        """Segment the full-resolution image for each concept, concurrently.
+        """Segment the full frame plus 2x2 grid quadrants per concept.
+
+        Every concept phrase is sent concurrently against five image
+        payloads: the original full-resolution frame plus its four
+        quadrant crops, so one call fans out to 5 x len(concepts)
+        requests sharing the configured concurrency limit (at most 5 in
+        flight). Only masks scoring above 0.90 confidence aggregate
+        into the result; the rest never reach Muse Wonder. Quadrant
+        boxes are translated to full-frame pixels and each mask is
+        tagged with its tile, so the aggregated list carries both
+        macro-architecture (full tile) and micro-details (quadrants).
 
         The first attempt always sends the original uncompressed payload
         for maximum resolution. On HTTP 500 (server-side OOM on dense
-        payloads) the request is retried once with the image downscaled
-        so its longest edge is capped at 1024px; if that also fails a
-        SamDenseImageError with DENSE_IMAGE_MESSAGE is raised instead
-        of the raw server error body.
+        payloads) the frame is downscaled so its longest edge is capped
+        at 1024px and the whole 5-payload batch is retried once; if that
+        also fails a SamDenseImageError with DENSE_IMAGE_MESSAGE is
+        raised instead of the raw server error body.
 
         Returns {"model", "concepts", "mask_count", "masks"} with one mask
-        dict per decoded mask, each tagged with its concept phrase. Rasters
-        are row-major bytes of 0/1 with exactly width*height entries.
+        dict per decoded mask, each tagged with its concept phrase and
+        tile. Rasters are row-major bytes of 0/1 with exactly
+        width*height entries of their own tile; "frame_width" /
+        "frame_height" on quadrant masks give the full-frame dimensions
+        their remapped boxes are expressed in.
         """
         if isinstance(concepts, str):
             concepts = (concepts,)
@@ -696,28 +835,62 @@ class SamSegmenter:
         if not concepts:
             raise ValueError("At least one concept phrase is required.")
         if isinstance(image, Image.Image):
-            data = await asyncio.to_thread(encode_png_bytes, image)
-            mime = "image/png"
+            full_size = image.size
+            full_rgb_source = image
+            full_data = await asyncio.to_thread(encode_png_bytes, image)
+            full_mime = "image/png"
         else:
-            data = bytes(image)
-            mime = sniff_image_mime(data)
-        data_url = (
-            f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+            full_data = bytes(image)
+            full_mime = sniff_image_mime(full_data)
+            try:
+                full_rgb_source = await asyncio.to_thread(
+                    _decode_rgb_image, full_data
+                )
+            except Exception as exc:
+                raise SamApiError(
+                    f"Could not decode the uploaded image: {exc}"
+                ) from exc
+            full_size = full_rgb_source.size
+        full_url = (
+            f"data:{full_mime};base64,{base64.b64encode(full_data).decode('ascii')}"
         )
 
-        async def run_all(url: str) -> dict:
+        async def tile_payloads(
+            source: Image.Image, frame_url: str
+        ) -> list[tuple[str, str, tuple[int, int] | None]]:
+            quadrants = await asyncio.to_thread(
+                encode_quadrant_data_urls, source
+            )
+            return assemble_tile_payloads(frame_url, quadrants)
+
+        async def run_all(payloads, frame_size: tuple[int, int]) -> dict:
             semaphore = asyncio.Semaphore(self._max_concurrency)
 
-            async def one(concept: str):
+            async def one(concept, tile_name, url, origin):
                 async with semaphore:
-                    return concept, await self.segment_concept(url, concept)
+                    found = await self.segment_concept(url, concept)
+                    return concept, tile_name, origin, found
 
             masks: list[dict] = []
-            for concept, found in await asyncio.gather(
-                *(one(concept) for concept in concepts)
+            pairs = [
+                (concept, tile_name, url, origin)
+                for concept in concepts
+                for tile_name, url, origin in payloads
+            ]
+            for concept, tile_name, origin, found in await asyncio.gather(
+                *(one(*pair) for pair in pairs)
             ):
                 for mask in found:
-                    masks.append({"concept": concept, **mask})
+                    if not passes_confidence_filter(mask):
+                        continue
+                    entry = {"concept": concept, "tile": tile_name, **mask}
+                    if origin is not None:
+                        entry["box"] = offset_box_to_full_frame(
+                            mask.get("box"), origin
+                        )
+                        entry["frame_width"] = frame_size[0]
+                        entry["frame_height"] = frame_size[1]
+                    masks.append(entry)
             return {
                 "model": self._model,
                 "concepts": list(concepts),
@@ -726,17 +899,24 @@ class SamSegmenter:
             }
 
         try:
-            return await run_all(data_url)
+            payloads = await tile_payloads(full_rgb_source, full_url)
+            return await run_all(payloads, full_size)
         except SamDenseImageError:
             try:
-                fallback_url = await asyncio.to_thread(
-                    encode_fallback_data_url, image
+                small = await asyncio.to_thread(
+                    downscale_to_long_edge, full_rgb_source
                 )
+                small_data = await asyncio.to_thread(encode_png_bytes, small)
             except SamDenseImageError:
                 raise
             except Exception as exc:
                 raise SamDenseImageError(DENSE_IMAGE_MESSAGE) from exc
+            small_url = (
+                "data:image/png;base64,"
+                f"{base64.b64encode(small_data).decode('ascii')}"
+            )
             try:
-                return await run_all(fallback_url)
+                payloads = await tile_payloads(small, small_url)
+                return await run_all(payloads, small.size)
             except SamApiError as exc:
                 raise SamDenseImageError(DENSE_IMAGE_MESSAGE) from exc

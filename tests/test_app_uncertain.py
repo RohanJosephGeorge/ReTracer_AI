@@ -97,6 +97,14 @@ class RenderUncertainResultTests(unittest.TestCase):
         self.assertIn("Iron lattice tower", text)
         mock_st.map.assert_not_called()
 
+    def test_info_expands_telegraphic_shorthand(self):
+        mock_st, _, _ = self.render_with(
+            good_result(reasoning_steps=["Hyp B -> ELIMINATED, biome clash"]),
+            None,
+        )
+        text = mock_st.info.call_args.args[0]
+        self.assertIn("Hypothesis B was eliminated: biome clash.", text)
+
     def test_missing_animation_still_shows_info(self):
         mock_st, mock_lottie, _ = self.render_with(
             good_result(latitude=None, longitude=None), None

@@ -352,6 +352,56 @@ class DirectLivePipelineTests(unittest.TestCase):
             {"latitude": 48.858, "longitude": 2.295},
         )
 
+    def test_live_pipeline_catches_full_dense_stream(self):
+        from spatial_reasoning import build_spatial_prompt
+
+        # 5 tiles x 3 concepts x 2 high-confidence masks.
+        tiles = ("full", "top-left", "top-right", "bottom-left",
+                 "bottom-right")
+        masks = []
+        for tile in tiles:
+            for concept in ("text", "flora", "road"):
+                for ordinal in range(2):
+                    masks.append({
+                        "concept": concept,
+                        "tile": tile,
+                        "object_id": f"{tile}-{concept}-{ordinal}",
+                        "confidence": 0.95,
+                        "box": {"left": 1, "top": 2, "right": 3, "bottom": 4},
+                        "mask": {"width": 32, "height": 24, "pixel_count": 6},
+                    })
+        sam_result = {
+            "model": "m",
+            "concepts": ["text", "flora", "road"],
+            "mask_count": len(masks),
+            "masks": masks,
+        }
+        captured = {}
+
+        def fake_reason(summary, hint, on_retry, image, api_key):
+            captured["summary"] = summary
+            return wonder_payload()
+
+        with (
+            patch.object(app, "_segment_image_sync", return_value=sam_result),
+            patch.object(app, "_reason_wonder_sync", side_effect=fake_reason),
+            patch.object(app, "get_meta_api_key", return_value="k"),
+        ):
+            outcome = app.execute_live_analysis_direct(
+                png_upload(), "riverside", screener=clean_screener
+            )
+        self.assertEqual(outcome["kind"], "ok")
+        summary = captured["summary"]
+        self.assertEqual(len(summary), 30)
+        self.assertEqual({entry["tile"] for entry in summary}, set(tiles))
+        # The real prompt embeds every tile of the dense list.
+        prompt = build_spatial_prompt(summary, "riverside")
+        for tile in tiles:
+            self.assertIn(tile, prompt)
+        self.assertEqual(prompt.count('"tile"'), 30)
+        self.assertIn("bottom-right-road-1", prompt)
+
+
     def test_direct_forwards_on_progress_to_pipeline(self):
         seen = []
 

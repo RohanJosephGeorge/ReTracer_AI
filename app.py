@@ -4,6 +4,7 @@ import asyncio
 import html
 import json
 import random
+import re
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -191,7 +192,9 @@ MILESTONE_WONDER = (
 )
 MILESTONE_DONE = (100, "Analysis complete.")
 COMPLETION_HOLD_SECONDS = 0.5
-SAM_PROGRESS_TICK_SECONDS = 2.0
+# ~135s SAM baseline (75 requests at 5 concurrent): 39 points climbing
+# ~2 points per 7s tick spans the whole window without stalling at cap.
+SAM_PROGRESS_TICK_SECONDS = 7.0
 SAM_PROGRESS_TICK_MAX_STEP = 3
 SAM_PROGRESS_CAP = 44
 WONDER_PROGRESS_TICK_SECONDS = 2.0
@@ -1014,6 +1017,81 @@ def format_coordinates(coordinates) -> str | None:
     return f"{abs(lat)}° {lat_hemi}, {abs(lon)}° {lon_hemi}"
 
 
+HUMANIZE_STEP_REPLACEMENTS = (
+    ("Hyps", "Hypotheses"),
+    ("Hyp", "Hypothesis"),
+    ("Evds", "Evidence"),
+    ("Evd", "Evidence"),
+    ("X-exam", "Cross-examination"),
+    ("X-check", "Cross-check"),
+    ("conf", "confidence"),
+    ("Conf", "Confidence"),
+    ("coords", "coordinates"),
+    ("Coords", "Coordinates"),
+)
+
+
+def humanize_reasoning_step(step) -> str:
+    """Rewrite a terse deduction line as a readable English sentence.
+
+    Safety net in case the model slips into shorthand despite the
+    natural-language directive: the final result restructures each point;
+    abbreviations expand to
+    full words, elimination and support verdicts become complete
+    sentences, and anything unrecognized keeps its words with a clean
+    sentence finish. Word boundaries keep full words like Hypothesis
+    or confidence intact, and plain prose passes through with only
+    light polish.
+    """
+    text = re.sub(r"\s+", " ", str(step)).strip()
+    text = re.sub(r"^[-\u2022*]\s+", "", text)
+    for short, full in HUMANIZE_STEP_REPLACEMENTS:
+        text = re.sub(r"\b" + re.escape(short) + r"\b", full, text)
+    text = text.replace("->", "\u2192")
+    text = text.replace(" + ", " and ")
+    if (
+        eliminated := re.match(
+            r"^(hypothesis\s+\S+?)\s*\u2192\s*eliminated[, ]?\s*(.*)$",
+            text,
+            re.IGNORECASE,
+        )
+    ):
+        subject, reason = eliminated.group(1, 2)
+        text = f"{subject} was eliminated" + (f": {reason}" if reason else "")
+    elif (
+        supported := re.match(
+            r"^evidence(?::| from)\s*(.+?)\s+back\s+(hypothesis\s+\S+?)\.?$",
+            text,
+            re.IGNORECASE,
+        )
+    ):
+        detail, subject = supported.group(1, 2)
+        text = f"Evidence from {detail} supports {subject}"
+    elif (
+        examined := re.match(
+            r"^cross-examination:\s*(hypothesis\s+\S+?)\s+flaws probed\.?$",
+            text,
+            re.IGNORECASE,
+        )
+    ):
+        text = f"Cross-examination probed the flaws in {examined.group(1)}"
+    elif (
+        verdict := re.match(r"^verdict locked\s*→\s*(.+)$", text, re.IGNORECASE)
+    ):
+        text = f"Verdict locked: {verdict.group(1)}"
+    elif "→" in text:
+        parts = [part.strip() for part in text.split("→")]
+        text = parts[0] + "".join(
+            f", which leads to {part}" for part in parts[1:] if part
+        )
+    text = text.strip()
+    if text:
+        text = text[0].upper() + text[1:]
+    if text and text[-1] not in ".!?" and re.search(r"[A-Za-z]", text):
+        text += "."
+    return text
+
+
 def render_result_dashboard(result: dict) -> None:
     """Render the luxury glass dashboard for an analysis result."""
     result = result or {}
@@ -1041,7 +1119,7 @@ def render_result_dashboard(result: dict) -> None:
             continue
         text = str(step).strip()
         if text:
-            steps.append(text)
+            steps.append(humanize_reasoning_step(text))
     if steps:
         items = "".join(
             f"<li>{html.escape(step)}</li>" for step in steps
@@ -1190,7 +1268,7 @@ def _run_live_pipeline_sync(
         on_progress(*MILESTONE_SAM)
     api_key = get_meta_api_key()
     with ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="sam-segment"
+        max_workers=5, thread_name_prefix="sam-segment"
     ) as sam_pool:
         sam_future = sam_pool.submit(
             _segment_image_sync, safe_image, api_key, on_retry
@@ -1282,7 +1360,7 @@ def render_uncertain_result(result: dict) -> None:
             show_centered_lottie(st.empty(), animation, key="uncertain_lottie")
     st.info(
         "**Why the location couldn't be determined:**\n"
-        + "\n".join(f"- {step}" for step in steps)
+        + "\n".join(f"- {humanize_reasoning_step(step)}" for step in steps)
     )
 
 
@@ -1291,7 +1369,7 @@ def render_wonder_result(result: dict) -> None:
     steps_list = list(result.get("reasoning_steps") or [])
     if sac is not None and steps_list:
         sac.steps(
-            items=steps_list,
+            items=[humanize_reasoning_step(step) for step in steps_list],
             index=len(steps_list) - 1,
             direction="vertical",
             dot=True,
@@ -1299,7 +1377,7 @@ def render_wonder_result(result: dict) -> None:
         )
     else:
         for step in steps_list:
-            st.markdown(f"- {step}")
+            st.markdown(f"- {humanize_reasoning_step(step)}")
     confidence_col, precision_col = st.columns(2)
     with confidence_col:
         st.metric(

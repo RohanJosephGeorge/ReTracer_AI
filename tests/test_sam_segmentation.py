@@ -36,28 +36,36 @@ from sam_segmentation import (
     DENSE_IMAGE_MESSAGE,
     FALLBACK_MAX_LONG_EDGE,
     FOCUS_CONCEPTS,
+    MAX_CONCURRENT_SAM_REQUESTS,
+    MAX_TILE_PAYLOADS,
+    MIN_MASK_CONFIDENCE,
     RETRY_STATUS_TEXT,
     SAM_RETRY_WAIT,
     SamApiError,
     SamDenseImageError,
     SamRetryableError,
     SamSegmenter,
+    assemble_tile_payloads,
     downscale_to_long_edge,
     draw_mask_boxes,
     has_transient_cause,
+    offset_box_to_full_frame,
+    passes_confidence_filter,
     select_latest_masks,
+    slice_grid_tiles,
     sniff_image_mime,
     summarize_masks,
 )
 
 
-def fixture_line():
+def fixture_line(confidence="0.95"):
+    # High-confidence default: the >0.90 aggregation filter keeps it.
     raster = [1, 0, 0, 1]
     payload = _encode_raster(raster, 2, 2)
     if payload[:1] not in "!~":
         payload = "!" + payload
     return (
-        "<0f>0<|box;x1=1;y1=2;x2=10;y2=12;w=64;h=48|>"
+        f"<0f>0<|box;x1=1;y1=2;x2=10;y2=12;w=64;h=48;c={confidence}|>"
         f"<|mask;x=0;y=0;data=2,2,{payload}|>"
     )
 
@@ -69,6 +77,16 @@ def sse_bytes(events):
 
 def success_events():
     line = fixture_line()
+    lane = {"item_id": "msg_1", "output_index": 0, "content_index": 0}
+    return [
+        {"type": "response.output_text.delta", **lane, "delta": line},
+        {"type": "response.output_text.done", **lane, "text": line},
+        {"type": "response.completed"},
+    ]
+
+
+def low_confidence_events():
+    line = fixture_line(confidence="0.50")
     lane = {"item_id": "msg_1", "output_index": 0, "content_index": 0}
     return [
         {"type": "response.output_text.delta", **lane, "delta": line},
@@ -194,10 +212,11 @@ class FanOutTests(unittest.IsolatedAsyncioTestCase):
         session = FakeSession(FakeResponse(events=success_events()))
         seg = SamSegmenter(api_key="test-key", session=session)
         result = await seg.segment_image(gradient_png())
-        self.assertEqual(len(session.calls), len(FOCUS_CONCEPTS))
+        self.assertEqual(len(session.calls), 5 * len(FOCUS_CONCEPTS))
         self.assertEqual(result["concepts"], list(FOCUS_CONCEPTS))
         self.assertEqual(result["model"], "sam-3.1")
         seen = set()
+        payloads_per_concept = {}
         for call in session.calls:
             self.assertEqual(call["url"], "https://api.meta.ai/v1/responses")
             self.assertEqual(
@@ -214,13 +233,17 @@ class FanOutTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(images), 1)
             self.assertTrue(images[0].startswith("data:image/png;base64,"))
             seen.add(texts[0])
+            payloads_per_concept.setdefault(texts[0], []).append(images[0])
         self.assertEqual(seen, set(FOCUS_CONCEPTS))
+        for concept, urls in payloads_per_concept.items():
+            self.assertEqual(len(urls), 5)
+            self.assertEqual(len(set(urls)), 5)
 
     async def test_single_string_concept(self):
         session = FakeSession(FakeResponse(events=success_events()))
         seg = SamSegmenter(api_key="k", session=session)
         result = await seg.segment_image(gradient_png(), concepts="text")
-        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(len(session.calls), 5)
         self.assertEqual(result["concepts"], ["text"])
 
     async def test_empty_concepts_rejected(self):
@@ -258,10 +281,11 @@ class MaskParsingTests(unittest.IsolatedAsyncioTestCase):
         session = FakeSession(FakeResponse(events=success_events()))
         seg = SamSegmenter(api_key="k", session=session)
         result = await seg.segment_image(gradient_png(), concepts=["text"])
-        self.assertEqual(result["mask_count"], 1)
+        self.assertEqual(result["mask_count"], 5)
         mask = result["masks"][0]
         self.assertEqual(mask["concept"], "text")
         self.assertEqual(mask["object_id"], "0")
+        self.assertEqual(mask["confidence"], 0.95)
         # The official parser reports exclusive right/bottom edges.
         self.assertEqual(
             mask["box"], {"left": 1, "top": 2, "right": 11, "bottom": 13}
@@ -328,7 +352,7 @@ class ErrorMappingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SamApiError) as ctx:
             await seg.segment_image(gradient_png(), concepts="text")
         self.assertIn("401", str(ctx.exception))
-        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(len(session.calls), 5)
 
 
 class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
@@ -344,8 +368,8 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
                 result = await seg.segment_image(
                     gradient_png(), concepts="text"
                 )
-                self.assertEqual(len(session.calls), 2)
-                self.assertEqual(result["mask_count"], 1)
+                self.assertEqual(len(session.calls), 6)
+                self.assertEqual(result["mask_count"], 5)
 
     async def test_exhaustion_reraises_after_three_attempts(self):
         session = FakeSession(error_response(503))
@@ -355,7 +379,7 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SamRetryableError) as ctx:
             await seg.segment_image(gradient_png(), concepts="text")
         self.assertIn("503", str(ctx.exception))
-        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(session.calls), 15)
 
     async def test_client_errors_never_retry(self):
         for status in (400, 401, 404):
@@ -367,7 +391,7 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(SamApiError) as ctx:
                     await seg.segment_image(gradient_png(), concepts="text")
                 self.assertNotIsInstance(ctx.exception, SamRetryableError)
-                self.assertEqual(len(session.calls), 1)
+                self.assertEqual(len(session.calls), 5)
 
     def test_backoff_schedule_is_two_then_four_seconds(self):
         for attempt, expected in ((1, 2), (2, 4)):
@@ -392,8 +416,8 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
             on_retry=lambda attempt, wait: seen.append((attempt, wait)),
         )
         result = await seg.segment_image(gradient_png(), concepts="text")
-        self.assertEqual(result["mask_count"], 1)
-        self.assertEqual(seen, [(1, 2), (2, 4)])
+        self.assertEqual(result["mask_count"], 5)
+        self.assertCountEqual(seen, [(1, 2), (1, 2)])
 
     async def test_connection_drop_retries_three_times(self):
         session = RaisingSession(
@@ -404,7 +428,7 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(SamRetryableError):
             await seg.segment_image(gradient_png(), concepts="text")
-        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(session.calls), 15)
 
     async def test_timeout_retries_three_times(self):
         session = RaisingSession(asyncio.TimeoutError())
@@ -413,7 +437,7 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(SamRetryableError):
             await seg.segment_image(gradient_png(), concepts="text")
-        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(session.calls), 15)
 
     async def test_winerror_socket_fault_retries_and_reports(self):
         session = RaisingSession(
@@ -427,7 +451,7 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SamRetryableError) as ctx:
             await seg.segment_image(gradient_png(), concepts="text")
         self.assertIn("WinError 121", str(ctx.exception))
-        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(session.calls), 15)
 
     async def test_midstream_drop_retries(self):
         session = FakeSession(
@@ -440,7 +464,7 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(SamRetryableError):
             await seg.segment_image(gradient_png(), concepts="text")
-        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(session.calls), 15)
 
     async def test_malformed_stream_never_retries(self):
         session = FakeSession(BadJsonResponse())
@@ -450,7 +474,7 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SamApiError) as ctx:
             await seg.segment_image(gradient_png(), concepts="text")
         self.assertNotIsInstance(ctx.exception, SamRetryableError)
-        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(len(session.calls), 5)
 
 
 class TransientCauseTests(unittest.TestCase):
@@ -584,10 +608,19 @@ class GracefulDegradationTests(unittest.IsolatedAsyncioTestCase):
         result = await seg.segment_image(
             large_rgb_image(), concepts="text"
         )
-        self.assertEqual(result["mask_count"], 1)
-        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(result["mask_count"], 5)
+        self.assertEqual(len(session.calls), 10)
         self.assertEqual(sent_image_size(session.calls[0]), (2048, 1024))
-        self.assertEqual(sent_image_size(session.calls[1]), (1024, 512))
+        initial_sizes = sorted(
+            sent_image_size(call) for call in session.calls[:5]
+        )
+        self.assertEqual(
+            initial_sizes, [(1024, 512)] * 4 + [(2048, 1024)]
+        )
+        self.assertEqual(sent_image_size(session.calls[5]), (1024, 512))
+        fallback_sizes = sorted(
+            sent_image_size(call) for call in session.calls[5:])
+        self.assertEqual(fallback_sizes, [(512, 256)] * 4 + [(1024, 512)])
 
     async def test_500_fallback_bytes_retries_resized(self):
         buf = io.BytesIO()
@@ -599,10 +632,19 @@ class GracefulDegradationTests(unittest.IsolatedAsyncioTestCase):
             api_key="k", session=session, retrying=fast_retrying()
         )
         result = await seg.segment_image(buf.getvalue(), concepts="text")
-        self.assertEqual(result["mask_count"], 1)
-        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(result["mask_count"], 5)
+        self.assertEqual(len(session.calls), 10)
         self.assertEqual(sent_image_size(session.calls[0]), (2048, 1024))
-        self.assertEqual(sent_image_size(session.calls[1]), (1024, 512))
+        initial_sizes = sorted(
+            sent_image_size(call) for call in session.calls[:5]
+        )
+        self.assertEqual(
+            initial_sizes, [(1024, 512)] * 4 + [(2048, 1024)]
+        )
+        self.assertEqual(sent_image_size(session.calls[5]), (1024, 512))
+        fallback_sizes = sorted(
+            sent_image_size(call) for call in session.calls[5:])
+        self.assertEqual(fallback_sizes, [(512, 256)] * 4 + [(1024, 512)])
 
     async def test_500_fallback_failure_raises_dense_message(self):
         session = FakeSession(error_response(500))
@@ -614,7 +656,7 @@ class GracefulDegradationTests(unittest.IsolatedAsyncioTestCase):
                 large_rgb_image(), concepts="text"
             )
         self.assertIn("too dense for spatial processing", str(ctx.exception))
-        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(len(session.calls), 10)
 
     async def test_non_500_errors_never_trigger_fallback(self):
         session = FakeSession(error_response(400))
@@ -625,8 +667,185 @@ class GracefulDegradationTests(unittest.IsolatedAsyncioTestCase):
             await seg.segment_image(
                 large_rgb_image(), concepts="text"
             )
-        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(len(session.calls), 5)
 
+
+class ConfidenceFilterTests(unittest.TestCase):
+    def test_bounds_constants_are_exact(self):
+        self.assertEqual(MIN_MASK_CONFIDENCE, 0.90)
+        self.assertEqual(MAX_TILE_PAYLOADS, 5)
+        self.assertEqual(MAX_CONCURRENT_SAM_REQUESTS, 5)
+
+    def test_keeps_strictly_above_threshold(self):
+        self.assertTrue(passes_confidence_filter({"confidence": 0.901}))
+        self.assertTrue(passes_confidence_filter({"confidence": 1.0}))
+
+    def test_drops_at_or_below_threshold(self):
+        for bad in (0.90, 0.50, 0.0, -0.1):
+            with self.subTest(bad=bad):
+                self.assertFalse(passes_confidence_filter({"confidence": bad}))
+
+    def test_drops_missing_or_non_numeric_confidence(self):
+        for bad in (None, "0.99", True, float("nan")):
+            with self.subTest(bad=bad):
+                self.assertFalse(passes_confidence_filter({"confidence": bad}))
+        self.assertFalse(passes_confidence_filter({}))
+
+
+class TileBudgetTests(unittest.TestCase):
+    def test_assembles_full_plus_quadrants(self):
+        quads = [(f"q{i}", f"url{i}", (i, i)) for i in range(4)]
+        payloads = assemble_tile_payloads("full-url", quads)
+        self.assertEqual(len(payloads), 5)
+        self.assertEqual(payloads[0], ("full", "full-url", None))
+
+    def test_rejects_sixth_payload(self):
+        quads = [(f"q{i}", f"url{i}", (i, i)) for i in range(5)]
+        with self.assertRaises(SamApiError):
+            assemble_tile_payloads("full-url", quads)
+
+    def test_concurrency_defaults_and_clamps_to_five(self):
+        default = SamSegmenter(api_key="k")
+        self.assertEqual(default._max_concurrency, 5)
+        clamped = SamSegmenter(api_key="k", max_concurrency=10)
+        self.assertEqual(clamped._max_concurrency, 5)
+        low = SamSegmenter(api_key="k", max_concurrency=0)
+        self.assertEqual(low._max_concurrency, 1)
+
+
+class GridCropGeometryTests(unittest.TestCase):
+    """Pure slicing/offset geometry: no event loop needed."""
+
+    def test_slice_even_grid(self):
+        image = Image.new("RGB", (64, 48))
+        tiles = slice_grid_tiles(image)
+        self.assertEqual(
+            [(name, crop.size, origin) for name, crop, origin in tiles],
+            [
+                ("top-left", (32, 24), (0, 0)),
+                ("top-right", (32, 24), (32, 0)),
+                ("bottom-left", (32, 24), (0, 24)),
+                ("bottom-right", (32, 24), (32, 24)),
+            ],
+        )
+
+    def test_slice_odd_dimensions_cover_frame_exactly(self):
+        image = Image.new("RGB", (33, 25))
+        tiles = slice_grid_tiles(image)
+        self.assertEqual(
+            [(name, crop.size, origin) for name, crop, origin in tiles],
+            [
+                ("top-left", (16, 12), (0, 0)),
+                ("top-right", (17, 12), (16, 0)),
+                ("bottom-left", (16, 13), (0, 12)),
+                ("bottom-right", (17, 13), (16, 12)),
+            ],
+        )
+        area = sum(crop.size[0] * crop.size[1] for _, crop, _ in tiles)
+        self.assertEqual(area, 33 * 25)
+
+    def test_slice_skips_degenerate_tiles(self):
+        tiles = slice_grid_tiles(Image.new("RGB", (1, 24)))
+        self.assertEqual(
+            [(name, crop.size) for name, crop, _ in tiles],
+            [("top-right", (1, 12)), ("bottom-right", (1, 12))],
+        )
+
+    def test_offset_box_translates_to_full_frame(self):
+        self.assertEqual(
+            offset_box_to_full_frame(
+                {"left": 1, "top": 2, "right": 11, "bottom": 13}, (16, 12)
+            ),
+            {"left": 17, "top": 14, "right": 27, "bottom": 25},
+        )
+
+    def test_offset_box_passes_through_bad_boxes(self):
+        self.assertIsNone(offset_box_to_full_frame(None, (16, 12)))
+        partial = {"left": 1}
+        self.assertIs(offset_box_to_full_frame(partial, (16, 12)), partial)
+        non_numeric = {"left": "x", "top": 2, "right": 3, "bottom": 4}
+        self.assertIs(
+            offset_box_to_full_frame(non_numeric, (16, 12)), non_numeric
+        )
+
+    def test_summarize_prefers_global_frame_geometry(self):
+        summaries = summarize_masks(
+            {
+                "masks": [
+                    {
+                        "concept": "text",
+                        "tile": "bottom-right",
+                        "object_id": "0",
+                        "confidence": 0.9,
+                        "box": {"left": 17, "top": 14, "right": 27, "bottom": 25},
+                        "frame_width": 32,
+                        "frame_height": 24,
+                        "mask": {"width": 16, "height": 12, "pixel_count": 5},
+                    },
+                    {
+                        "concept": "text",
+                        "object_id": "1",
+                        "confidence": 0.5,
+                        "box": {"left": 1, "top": 2, "right": 3, "bottom": 4},
+                        "mask": {"width": 32, "height": 24, "pixel_count": 6},
+                    },
+                ]
+            }
+        )
+        self.assertEqual(summaries[0]["tile"], "bottom-right")
+        self.assertEqual(summaries[0]["width"], 32)
+        self.assertEqual(summaries[0]["height"], 24)
+        self.assertEqual(summaries[1]["tile"], "full")
+        self.assertEqual(summaries[1]["width"], 32)
+        self.assertEqual(summaries[1]["height"], 24)
+
+
+class GridCropFanOutTests(unittest.IsolatedAsyncioTestCase):
+    """Tile fan-out, remap, and aggregation over segment_image."""
+
+    async def test_five_tiles_aggregate_with_remapped_boxes(self):
+        session = FakeSession(FakeResponse(events=success_events()))
+        seg = SamSegmenter(api_key="k", session=session)
+        result = await seg.segment_image(gradient_png(), concepts="text")
+        self.assertEqual(len(session.calls), 5)
+        self.assertEqual(result["mask_count"], 5)
+        self.assertEqual(
+            [mask["tile"] for mask in result["masks"]],
+            ["full", "top-left", "top-right", "bottom-left", "bottom-right"],
+        )
+        boxes = [mask["box"] for mask in result["masks"]]
+        # gradient_png() is 32x24: origins (0,0), (16,0), (0,12), (16,12).
+        self.assertEqual(
+            boxes[0], {"left": 1, "top": 2, "right": 11, "bottom": 13}
+        )
+        self.assertEqual(
+            boxes[1], {"left": 1, "top": 2, "right": 11, "bottom": 13}
+        )
+        self.assertEqual(
+            boxes[2], {"left": 17, "top": 2, "right": 27, "bottom": 13}
+        )
+        self.assertEqual(
+            boxes[3], {"left": 1, "top": 14, "right": 11, "bottom": 25}
+        )
+        self.assertEqual(
+            boxes[4], {"left": 17, "top": 14, "right": 27, "bottom": 25}
+        )
+        for mask in result["masks"][1:]:
+            self.assertEqual(mask["frame_width"], 32)
+            self.assertEqual(mask["frame_height"], 24)
+        self.assertNotIn("frame_width", result["masks"][0])
+        # Decoded rasters keep their own tile dimensions.
+        for mask in result["masks"]:
+            self.assertEqual(mask["mask"]["width"], 2)
+            self.assertEqual(mask["mask"]["height"], 2)
+
+    async def test_low_confidence_masks_filtered_from_aggregation(self):
+        session = FakeSession(FakeResponse(events=low_confidence_events()))
+        seg = SamSegmenter(api_key="k", session=session)
+        result = await seg.segment_image(gradient_png(), concepts="text")
+        self.assertEqual(len(session.calls), 5)
+        self.assertEqual(result["mask_count"], 0)
+        self.assertEqual(result["masks"], [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -51,7 +51,7 @@ class RenderWonderResultTests(unittest.TestCase):
         mock_sac.steps.assert_called_once()
         _, kwargs = mock_sac.steps.call_args
         self.assertEqual(
-            kwargs["items"], ["Iron lattice tower", "French signage"]
+            kwargs["items"], ["Iron lattice tower.", "French signage."]
         )
         self.assertEqual(kwargs["direction"], "vertical")
         self.assertTrue(kwargs["dot"])

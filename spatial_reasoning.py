@@ -70,6 +70,19 @@ DEFAULT_STRICT_RULES = (
     "still provide valid coordinates for the regional center or most "
     "likely intersection.",
 )
+SYSTEM_DIRECTIVE = (
+    "You are Sherlock Holmes examining the scene of a photograph. Perform "
+    "an exhaustive spatial deduction from the visual evidence: weigh 3 "
+    "competing geographic hypotheses, cross-examine each one's flaws in "
+    "plain words, and declare a final coordinate with calibrated "
+    "confidence. Write concise, natural English sentences a curious reader "
+    "can follow: no abbreviations (never Hyp, Evd, Elim), no arrows, no "
+    "Matrix: or code-like labels, no robotic fragments. Spend your limited "
+    "words on the most decisive clues first: legible text and signage, "
+    "then architecture and infrastructure, then vegetation, soil, and "
+    "light. Deliver maximum 'Sherlock Holmes' analytical depth at minimum "
+    "word count."
+)
 PRECISION_LEVELS = (
     "Public Landmark",
     "Street Level",
@@ -317,9 +330,11 @@ def build_spatial_prompt(
             f"TEXT DECODING (OCR):\n{OCR_INSTRUCTION}\n"
             f"{TEXT_ANCHOR_INSTRUCTION}\n\n"
         )
-    return f"""You are an elite, world-class reverse geolocation expert and spatial reasoning engine. Your goal is to pinpoint the location of any image using all available visual and contextual evidence, making educated, highly reasoned deductions even when features are subtle.
+    return f"""{SYSTEM_DIRECTIVE}
 
-Reason in multiple hypotheses: (1) generate 3 distinct candidate locations (Candidate A, B, C) from the visual evidence; (2) score every candidate against all extracted features (architecture, flora, soil, infrastructure, text) in an evidence matrix and eliminate candidates that violate key constraints; (3) assign a confidence weighting to the surviving winner and output its exact geographic center or landmark coordinates.
+You are an elite, world-class reverse geolocation expert and spatial reasoning engine. Your goal is to pinpoint the location of any image using all available visual and contextual evidence, making educated, highly reasoned deductions even when features are subtle.
+
+Reason in multiple hypotheses: (1) generate 3 distinct candidate locations (Candidate A, B, C) from the visual evidence; (2) weigh every candidate against all extracted features (architecture, flora, soil, infrastructure, text) and rule out candidates that violate key constraints; (3) assign a confidence weighting to the surviving winner and output its exact geographic center or landmark coordinates.
 
 SEGMENTATION MASKS (concept, object id, box, size, confidence):
 {masks_json}
@@ -358,7 +373,7 @@ REQUIRED OUTPUT: a single JSON object with exactly these keys:
 - longitude: number between -180 and 180, or null when halting
 - city: string ("" when the exact city is unknown or when halting)
 - country: string ("" when the exact country is unknown or when halting)
-- reasoning_steps: non-empty array of concise strings, under {max_reasoning_tokens} tokens in total, narrating the 3 candidates, the evidence-matrix elimination, and the winning selection
+- reasoning_steps: non-empty array of concise strings, under {max_reasoning_tokens} tokens in total, narrating the three candidate locations, why the weaker ones were ruled out, and why the winner was selected, in plain natural sentences
 - confidence_score: number between 0 and 1 (exactly 0.0 when halting)
 - precision_level: one of 'Public Landmark', 'Street Level', 'Neighborhood Radius', 'City Level', 'State / Region Radius' ('Unknown' when halting)
 
@@ -649,6 +664,10 @@ class SpatialReasoner:
         image: Image.Image | bytes | None = None,
     ) -> dict:
         """Run multi-step spatial reasoning; return the validated result.
+
+        One API call per invocation (plus transient retries): the
+        multi-agent debate is simulated inside that single pass per
+        SYSTEM_DIRECTIVE, never through sequential debate rounds.
 
         image attaches the raw photo as a second multimodal input part
         next to the SAM mask inventory. Reasoning always proceeds, even

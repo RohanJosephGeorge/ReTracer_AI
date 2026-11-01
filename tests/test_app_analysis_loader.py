@@ -57,7 +57,7 @@ class MilestoneConstantTests(unittest.TestCase):
         )
         self.assertEqual(app.MILESTONE_DONE, (100, "Analysis complete."))
         self.assertEqual(app.COMPLETION_HOLD_SECONDS, 0.5)
-        self.assertEqual(app.SAM_PROGRESS_TICK_SECONDS, 2.0)
+        self.assertEqual(app.SAM_PROGRESS_TICK_SECONDS, 7.0)
         self.assertEqual(app.SAM_PROGRESS_TICK_MAX_STEP, 3)
         self.assertEqual(app.SAM_PROGRESS_CAP, 44)
         self.assertEqual(app.WONDER_PROGRESS_TICK_SECONDS, 2.0)
@@ -92,6 +92,21 @@ class MilestoneConstantTests(unittest.TestCase):
             app.SAM_TICK_MESSAGES + app.WONDER_TICK_MESSAGES
         ):
             self.assertNotIn("geoguessr", message.lower())
+
+    def test_sam_pacing_spans_baseline_window(self):
+        span_points = app.SAM_PROGRESS_CAP - app.MILESTONE_SAM[0]
+        avg_step = (1 + app.SAM_PROGRESS_TICK_MAX_STEP) / 2
+        expected_seconds = (
+            span_points / avg_step * app.SAM_PROGRESS_TICK_SECONDS
+        )
+        self.assertGreaterEqual(expected_seconds, 120)
+        self.assertLessEqual(expected_seconds, 150)
+
+    def test_tick_messages_fit_placeholder_line(self):
+        for message in (
+            app.SAM_TICK_MESSAGES + app.WONDER_TICK_MESSAGES
+        ):
+            self.assertLessEqual(len(message), 60)
 
     def test_timer_loader_is_gone(self):
         for name in (
@@ -200,7 +215,7 @@ class AwaitSamFutureTests(unittest.TestCase):
                 on_progress,
             )
         self.assertEqual(result, ["mask"])
-        self.assertEqual(mock_sleep.call_args_list, [call(2.0)] * 2)
+        self.assertEqual(mock_sleep.call_args_list, [call(7.0)] * 2)
         self.assertEqual(
             mock_rand.call_args_list, [call(1, 3), call(1, 3)]
         )
@@ -413,7 +428,7 @@ class LivePipelineSyncTests(unittest.TestCase):
         self.assertEqual(
             [init[1] for init in calls["inits"]],
             [
-                {"max_workers": 1, "thread_name_prefix": "sam-segment"},
+                {"max_workers": 5, "thread_name_prefix": "sam-segment"},
                 {"max_workers": 1, "thread_name_prefix": "wonder-reason"},
             ],
         )
