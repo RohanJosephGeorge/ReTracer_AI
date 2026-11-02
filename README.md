@@ -22,13 +22,13 @@ ReTracer AI was built to anchor lost memories. I wanted to engineer an AI that d
 
 It is designed to help individuals, families, and caretakers piece together the geography of their history turning lost landscapes back into relived experiences.
 
-We were inspired by:
+I was inspired by:
 
 - How much location leaks from pixels alone, even after EXIF/GPS metadata is stripped.
 - The detective work of open-source geolocation — cross-referencing architecture, biomes, infrastructure, and text.
 - Meta's new Model API lineup: **SAM 3.1** for pixel-perfect segmentation and **Muse Wonder** for deep spatial reasoning.
 
-So we built ReTracer AI: forensic-grade geolocation with mathematical privacy guarantees.
+So I built ReTracer AI: forensic-grade geolocation with mathematical privacy guarantees.
 
 ## What It Does
 
