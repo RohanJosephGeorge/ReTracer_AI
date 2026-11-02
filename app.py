@@ -1,5 +1,3 @@
-"""Basic ReTracer AI upload app."""
-
 import asyncio
 import html
 import json
