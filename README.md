@@ -1,4 +1,4 @@
-# ReTracer AI — SpatialGeoGuesser
+# ReTracer AI — Spatial Reasoning Geolocation Engine
 
 > **Upload a memory. We retrace the map.**
 > A privacy-first AI detective that reverse-geolocates any photo — no GPS tags required.
