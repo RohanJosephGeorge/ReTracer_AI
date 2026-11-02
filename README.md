@@ -12,11 +12,11 @@ Live Demo: https://retracerai.streamlit.app/
 
 We capture thousands of photographs to freeze moments in time, but as years pass, the context of those memories often fades. For individuals experiencing old age, cognitive decline, or conditions like dementia, a cherished old photograph can become an isolated, frustrating artifact. The faces might be familiar, but the fundamental question *"Where was this?"* is lost.
 
-Current reverse-image search and standard AI models fail to solve this because they only look at macro-structures, hallucinating answers when they lack obvious landmarks. They cannot deduce meaning from the micro-details of a forgotten past.
+Current reverse-image search and standard AI models fail to solve this because they only look at macrostructures, hallucinating answers when they lack obvious landmarks. They cannot deduce meaning from the micro-details of a forgotten past.
 
 ReTracer AI was built to anchor lost memories. I wanted to engineer an AI that doesn't just blindly guess, but *reasons* like a detective. By combining SAM 3.1's micro-detail extraction with a rigorous multi-agent debate loop, this engine identifies the specific utility poles, foliage, and architectural nuances in a faded photograph to mathematically deduce its coordinates. 
 
-It is designed to help individuals, families, and caretakers piece together the geography of their history—turning lost landscapes back into relived experiences.
+It is designed to help individuals, families, and caretakers piece together the geography of their history turning lost landscapes back into relived experiences.
 
 We were inspired by:
 
