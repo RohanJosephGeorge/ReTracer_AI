@@ -10,7 +10,7 @@ Live Demo: https://retracerai.streamlit.app/
 
 ## Inspiration
 
-We capture thousands of photographs to freeze moments in time, but as years pass, the context of those memories often fades. For individuals experiencing old age, cognitive decline, or conditions like dementia, a cherished old photograph can become an isolated, frustrating artifact. The faces might be familiar, but the fundamental question—*"Where was this?"*—is lost.
+We capture thousands of photographs to freeze moments in time, but as years pass, the context of those memories often fades. For individuals experiencing old age, cognitive decline, or conditions like dementia, a cherished old photograph can become an isolated, frustrating artifact. The faces might be familiar, but the fundamental question *"Where was this?"* is lost.
 
 Current reverse-image search and standard AI models fail to solve this because they only look at macro-structures, hallucinating answers when they lack obvious landmarks. They cannot deduce meaning from the micro-details of a forgotten past.
 
