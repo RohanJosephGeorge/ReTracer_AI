@@ -122,7 +122,7 @@ class UploadFeedbackTests(unittest.TestCase):
         mock_st = self.run_home_with_clean_upload()
         mock_st.text_input.assert_called_once_with(
             "Regional hint (Optional)",
-            key="regional_hint_input",
+            key="regional_hint_input_0",
             placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
             help="Providing a state, landmark, or landscape context helps narrow spatial confidence faster.",
             disabled=False,
@@ -167,9 +167,10 @@ class UploadFeedbackTests(unittest.TestCase):
             key="memory_upload_0",
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
-            help="Sanitized locally with metadata removal and face blurring before spatial analysis.",
+            help=app.UPLOAD_HELP_TEXT,
             disabled=False,
         )
+        mock_st.caption.assert_called_once_with(app.MOBILE_UPLOAD_TIP)
 
 
 class HowItWorksViewTests(unittest.TestCase):

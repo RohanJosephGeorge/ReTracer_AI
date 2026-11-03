@@ -17,6 +17,20 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 JPEG_QUALITY = 95
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+# iPhones save to HEIC/HEIF by default; Pillow cannot decode those, so
+# uploads in that format are rejected with a pointer to the JPEG setting.
+APPLE_PHOTO_EXTENSIONS = {".heic", ".heif"}
+APPLE_PHOTO_MIME_TYPES = {
+    "image/heic",
+    "image/heif",
+    "image/heic-sequence",
+    "image/heif-sequence",
+}
+HEIC_HELP_MESSAGE = (
+    "iPhone photo detected in HEIC format, which this app cannot read. "
+    "Re-save it as JPEG or PNG (Settings > Camera > Formats > Most "
+    "Compatible), then upload again."
+)
 
 
 def is_valid_image(uploaded_file) -> tuple[bool, str]:
@@ -31,6 +45,8 @@ def is_valid_image(uploaded_file) -> tuple[bool, str]:
     filename = getattr(uploaded_file, "name", "") or ""
     _, ext = os.path.splitext(filename)
     ext = ext.lower()
+    if ext in APPLE_PHOTO_EXTENSIONS:
+        return False, HEIC_HELP_MESSAGE
     if ext not in ALLOWED_EXTENSIONS:
         return False, (
             f"Invalid file extension '{ext or '(none)'}'. "
@@ -38,6 +54,8 @@ def is_valid_image(uploaded_file) -> tuple[bool, str]:
         )
 
     mime_type = getattr(uploaded_file, "type", "") or ""
+    if mime_type in APPLE_PHOTO_MIME_TYPES:
+        return False, HEIC_HELP_MESSAGE
     if mime_type not in ALLOWED_MIME_TYPES:
         return False, (
             f"Invalid MIME type '{mime_type or '(unknown)'}'. "

@@ -800,6 +800,7 @@ class ResultsPersistenceTests(unittest.TestCase):
             upload_epoch=0,
         )
         state["regional_hint_input"] = "old hint"
+        state["regional_hint_input_0"] = "old hint"
         mock_st = MagicMock()
         mock_st.session_state = state
         with patch.object(app, "st", mock_st):
@@ -814,6 +815,7 @@ class ResultsPersistenceTests(unittest.TestCase):
             self.assertIsNone(state[key])
         self.assertEqual(state["upload_epoch"], 1)
         self.assertNotIn("regional_hint_input", state)
+        self.assertNotIn("regional_hint_input_0", state)
 
 
 if __name__ == "__main__":

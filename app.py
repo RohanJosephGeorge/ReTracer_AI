@@ -904,6 +904,52 @@ div[data-testid="stProgressBar"] > div > div {
     color: rgba(255, 255, 255, 0.5);
     font-style: italic;
 }
+/* Mobile upload tip shown under the dropzone. */
+div[data-testid="stCaption"] {
+    text-align: center !important;
+    color: rgba(255, 255, 255, 0.65) !important;
+}
+
+/* Mobile (<=640px): full-width card, 48px touch targets, 16px inputs
+   so iOS never auto-zooms, and a scrollable tab bar. */
+@media (max-width: 640px) {
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        max-width: 100% !important;
+        margin: 0.5rem auto 1.5rem auto !important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] > div {
+        padding: 1.25rem 1rem !important;
+    }
+    div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"],
+    div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] {
+        padding: 1.5rem 1rem !important;
+    }
+    div[data-testid="stFileUploader"] section[data-testid="stFileUploadDropzone"] button,
+    div[data-testid="stFileUploader"] section[data-testid="stFileUploaderDropzone"] button {
+        min-height: 48px !important;
+        font-size: 1rem !important;
+        width: 100% !important;
+    }
+    div[data-testid="stTextInput"] input {
+        font-size: 16px !important;
+        min-height: 48px !important;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] {
+        max-width: 100% !important;
+        overflow-x: auto !important;
+    }
+    div[data-testid="stButton"] button {
+        min-height: 48px !important;
+        font-size: 1rem !important;
+    }
+    .result-location {
+        font-size: 2.2rem !important;
+    }
+    .metric-mini-card {
+        min-width: 140px !important;
+        padding: 0.85rem 1.2rem !important;
+    }
+}
 </style>
 """
 
@@ -1490,6 +1536,47 @@ def render_validation_badge(text: str) -> None:
     )
 
 
+HINT_KEY_PREFIX = "regional_hint_input"
+UPLOAD_HELP_TEXT = (
+    "Sanitized locally with metadata removal and face blurring before "
+    "spatial analysis."
+)
+MOBILE_UPLOAD_TIP = (
+    "On a phone? Choose your photo from Files or Gallery. iPhone "
+    "photos must be JPEG or PNG (Settings > Camera > Formats > "
+    "Most Compatible)."
+)
+
+
+def hint_key_for_epoch(epoch: int) -> str:
+    """Widget key scoping the regional hint to one upload generation.
+
+    Refresh bumps the epoch, so the new hint input mounts with a fresh
+    identity that cannot inherit the previous hint's text.
+    """
+    return f"{HINT_KEY_PREFIX}_{epoch}"
+
+
+def clear_hint_state() -> None:
+    """Delete every regional-hint widget value from session state.
+
+    Covers the legacy unversioned key plus all epoch-scoped keys, so a
+    cleared hint can never resurface in a later submit.
+    """
+    for key in list(st.session_state.keys()):
+        if key == HINT_KEY_PREFIX or key.startswith(HINT_KEY_PREFIX + "_"):
+            del st.session_state[key]
+
+
+def upload_key_for_file(uploaded_file) -> str | None:
+    """Stable identity for the uploaded file, or None when empty."""
+    if uploaded_file is None:
+        return None
+    name = getattr(uploaded_file, "name", "") or ""
+    size = getattr(uploaded_file, "size", "") or ""
+    return f"{name}:{size}"
+
+
 def start_analysis() -> None:
     """Lock the UI and clear stale results before the script body runs.
 
@@ -1509,7 +1596,7 @@ def reset_home_for_new_upload() -> None:
     callbacks fire at the start of the triggering run, so render_home
     observes the cleared state immediately. Bumping the upload epoch
     remounts the uploader with a fresh identity (guaranteed empty),
-    and deleting the hint widget key clears its text.
+    and clearing every hint widget key empties its text.
     """
     st.session_state["analysis_results"] = None
     st.session_state["last_upload_key"] = None
@@ -1519,8 +1606,8 @@ def reset_home_for_new_upload() -> None:
     st.session_state["upload_epoch"] = (
         st.session_state.get("upload_epoch", 0) + 1
     )
-    if "regional_hint_input" in st.session_state:
-        del st.session_state["regional_hint_input"]
+    clear_hint_state()
+    # (legacy key covered by clear_hint_state)
 
 
 def render_home(developer_mode: bool = False) -> None:
@@ -1591,13 +1678,32 @@ def render_home(developer_mode: bool = False) -> None:
             key=f"memory_upload_{st.session_state["upload_epoch"]}",
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
-            help="Sanitized locally with metadata removal and face blurring before spatial analysis.",
+            help=UPLOAD_HELP_TEXT,
             disabled=is_analyzing or developer_mode,
         )
+        st.caption(MOBILE_UPLOAD_TIP)
+        active_file = uploaded_file
+        upload_key = upload_key_for_file(active_file)
+        # A newly arrived upload clears persisted results AND the
+        # hint. This runs before the hint widget is created so the
+        # textbox mounts empty in the same run. Returning to Home
+        # from another view remounts empty inputs (upload_key None),
+        # which must leave the finished result untouched; Refresh
+        # is the explicit way to clear it.
+        if (
+            upload_key is not None
+            and st.session_state["last_upload_key"] != upload_key
+        ):
+            st.session_state["last_upload_key"] = upload_key
+            st.session_state["analysis_results"] = None
+            st.session_state["screened_image"] = None
+            st.session_state["sam_result"] = None
+            st.session_state["wonder_result"] = None
+            clear_hint_state()
         st.space("small")
         regional_hint = st.text_input(
             "Regional hint (Optional)",
-            key="regional_hint_input",
+            key=hint_key_for_epoch(st.session_state["upload_epoch"]),
             placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
             help="Providing a state, landmark, or landscape context helps narrow spatial confidence faster.",
             disabled=is_analyzing or developer_mode,
@@ -1612,7 +1718,7 @@ def render_home(developer_mode: bool = False) -> None:
     if developer_mode:
         # Demo mode ignores any retained live inputs: uploads and hints
         # are locked, and the mock pipeline runs on the pre-made demo.
-        uploaded_file = None
+        active_file = None
         regional_hint = ""
     st.space("small")
     _, btn_col, _ = st.columns([1, 2, 1])
@@ -1652,13 +1758,13 @@ def render_home(developer_mode: bool = False) -> None:
             if developer_mode:
                 report(*MILESTONE_SAM)
                 outcome = execute_analysis(
-                    uploaded_file, regional_hint, True
+                    active_file, regional_hint, True
                 )
                 report(*MILESTONE_WONDER)
                 report(*MILESTONE_WONDER_DONE)
             else:
                 outcome = execute_live_analysis_direct(
-                    uploaded_file, regional_hint, on_progress=report
+                    active_file, regional_hint, on_progress=report
                 )
             st.session_state["analysis_results"] = outcome
             report(*MILESTONE_DONE)
@@ -1674,14 +1780,14 @@ def render_home(developer_mode: bool = False) -> None:
             st.session_state["is_analyzing"] = False
         st.rerun()
 
-    if uploaded_file is not None:
-        valid, message = is_valid_image(uploaded_file)
+    if active_file is not None:
+        valid, message = is_valid_image(active_file)
         if not valid:
             st.error(message)
         else:
             with st.spinner("Processing & Sanitizing Image..."):
                 clean_ok, clean_message, rgb_image = sanitize_uploaded_image(
-                    uploaded_file
+                    active_file
                 )
                 if not clean_ok:
                     st.error(clean_message)
@@ -1712,25 +1818,9 @@ def render_home(developer_mode: bool = False) -> None:
                             )
                             st.session_state["screened_image"] = safe_image
 
-    upload_key = (
-        f"{uploaded_file.name}:{uploaded_file.size}"
-        if uploaded_file is not None
-        else None
-    )
-    # Only a newly arrived upload clears persisted results. Returning
-    # to Home from another view remounts an empty uploader (upload_key
-    # None), which must leave the finished result untouched; the
-    # Refresh button is the explicit way to clear it.
-    if (
-        upload_key is not None
-        and st.session_state["last_upload_key"] != upload_key
-    ):
-        st.session_state["last_upload_key"] = upload_key
-        st.session_state["analysis_results"] = None
-        st.session_state["screened_image"] = None
-        st.session_state["sam_result"] = None
-        st.session_state["wonder_result"] = None
-
+    # New-capture detection ran before the hint input (see above);
+    # the finished outcome persisted in session state renders here
+    # on every run.
     render_analysis_outcome(st.session_state["analysis_results"])
 
 
@@ -1768,8 +1858,10 @@ def render_how_it_works() -> None:
     st.markdown(PIPELINE_DIAGRAM)
     st.subheader("How each stage works")
     st.markdown(
-        "1. **Upload** a JPEG, PNG, or WebP photo (max 10 MB). Files are "
-        "stripped of metadata and normalized to RGB at full resolution.\n"
+        "1. **Upload** a JPEG, PNG, or WebP photo (max 10 MB) from your "
+        "files or photo gallery. On iPhone, use JPEG or PNG (Settings > "
+        "Camera > Formats > Most Compatible). Files are stripped of "
+        "metadata and normalized to RGB at full resolution.\n"
         "2. **Pre-processing gates** run automatically: uploads lacking "
         "visual data are halted, any face over 5% of the image area is "
         "rejected, smaller faces are blurred.\n"
