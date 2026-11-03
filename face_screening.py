@@ -3,11 +3,16 @@
 Uses OpenCV's bundled Haar cascade (frontal-face weights ship with
 opencv-python, so detection is fully offline with no downloads).
 Strict cascade parameters suppress background noise, and boxes under
-MIN_FACE_PIXELS are dropped as pixel artifacts. Any single remaining
-face covering more than 5% of the image area rejects the image;
-smaller detected faces are heavily blurred with Pillow before the
-image is passed on. Only clean or successfully blurred images move
-forward.
+MIN_FACE_PIXELS are dropped as pixel artifacts. Each surviving
+candidate is then verified as an actual face: the bundled eye
+cascades must find an eye in the upper region, or the region must
+show strong skin tone plus face-like symmetry (covers sunglasses
+and missed eye detections). Unverified boxes are dropped before any
+blur or reject decision, so brickwork, windows, and foliage are no
+longer blurred. Any single verified face covering more than 5% of
+the image area rejects the image; smaller verified faces are heavily
+blurred with Pillow (soft-feathered edges) before the image is
+passed on. Only clean or successfully blurred images move forward.
 """
 
 from __future__ import annotations
@@ -15,7 +20,7 @@ from __future__ import annotations
 from typing import BinaryIO, Callable
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 try:
     import cv2
@@ -28,6 +33,17 @@ CASCADE_MIN_NEIGHBORS = 10
 CASCADE_MIN_SIZE = (50, 50)
 MIN_FACE_PIXELS = 50
 BLUR_PADDING_RATIO = 0.15
+BLUR_FEATHER_DIVISOR = 12
+BLUR_FEATHER_MIN = 4
+EYE_CASCADE_FILES = (
+    "haarcascade_eye_tree_eyeglasses.xml",
+    "haarcascade_eye.xml",
+)
+EYE_SCALE_FACTOR = 1.1
+EYE_MIN_NEIGHBORS = 4
+EYE_SEARCH_HEIGHT_RATIO = 0.65
+SKIN_FRACTION_MIN = 0.5
+SYMMETRY_SCORE_MAX = 0.9
 
 Box = tuple[int, int, int, int]
 Detector = Callable[[np.ndarray], list[Box]]
@@ -49,12 +65,95 @@ def find_oversized_face(
     return None
 
 
-def detect_face_boxes(bgr: np.ndarray) -> list[Box]:
-    """Detect faces with the offline Haar cascade (grayscale input).
+def skin_fraction(roi_bgr: np.ndarray) -> float:
+    """Fraction of skin-toned pixels via the YCrCb chrominance rule.
 
-    Fully local: the cascade XML ships with OpenCV, so no weights are
-    ever downloaded. Boxes under MIN_FACE_PIXELS are dropped as
-    pixel artifacts.
+    Pure numpy (BT.601, matching cv2.COLOR_BGR2YCrCb), so callers and
+    tests need no OpenCV for this signal.
+    """
+    rgb = roi_bgr[:, :, ::-1].astype(np.float64)
+    red, green, blue = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    luma = 0.299 * red + 0.587 * green + 0.114 * blue
+    cr = (red - luma) * 0.713 + 128.0
+    cb = (blue - luma) * 0.564 + 128.0
+    skin = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127)
+    return float(skin.mean())
+
+
+def symmetry_score(roi_gray: np.ndarray) -> float:
+    """Mirror difference between halves over local contrast.
+
+    Lower means more face-like vertical symmetry. Flat regions score
+    infinite (no structure, never a face).
+    """
+    gray = roi_gray.astype(np.float64)
+    width = gray.shape[1]
+    left = gray[:, : width // 2]
+    right = np.fliplr(gray[:, width - width // 2 :])
+    contrast = np.abs(gray - gray.mean()).mean()
+    if contrast < 1e-6:
+        return float("inf")
+    return float(np.abs(left - right).mean() / contrast)
+
+
+def is_verified_face(
+    roi_bgr: np.ndarray, roi_gray: np.ndarray, eye_hits: int
+) -> bool:
+    """True when a Haar candidate looks like an actual face.
+
+    An eye hit confirms immediately. Otherwise the region must show
+    both strong skin tone and face-like symmetry (sunglasses and
+    missed eye detections still pass; brickwork and windows do not).
+    """
+    if eye_hits >= 1:
+        return True
+    return (
+        skin_fraction(roi_bgr) >= SKIN_FRACTION_MIN
+        and symmetry_score(roi_gray) <= SYMMETRY_SCORE_MAX
+    )
+
+
+def _load_eye_cascades() -> list:
+    """Load the bundled eye cascades, skipping any that fail.
+
+    Fail-soft: a missing auxiliary file only disables the eye signal
+    (fallback signals still decide) instead of halting screening.
+    """
+    cascades = []
+    for filename in EYE_CASCADE_FILES:
+        try:
+            cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + filename
+            )
+            empty = cascade.empty()
+        except Exception:
+            continue
+        if not empty:
+            cascades.append(cascade)
+    return cascades
+
+
+def _count_eye_hits(upper_gray: np.ndarray, eye_cascades: list) -> int:
+    """Total eye hits across the loaded eye cascades."""
+    total = 0
+    for cascade in eye_cascades:
+        hits = cascade.detectMultiScale(
+            upper_gray,
+            scaleFactor=EYE_SCALE_FACTOR,
+            minNeighbors=EYE_MIN_NEIGHBORS,
+        )
+        total += len(hits)
+    return total
+
+
+def detect_face_boxes(bgr: np.ndarray) -> list[Box]:
+    """Detect verified faces with the offline Haar cascade.
+
+    Fully local: every cascade XML ships with OpenCV, so no weights
+    are ever downloaded. Boxes under MIN_FACE_PIXELS are dropped as
+    pixel artifacts, then each candidate must pass is_verified_face
+    (eye evidence, or skin tone plus symmetry) before it can blur
+    anything or reject the image.
     """
     if cv2 is None:
         raise RuntimeError("OpenCV is not installed; face detection unavailable.")
@@ -75,12 +174,29 @@ def detect_face_boxes(bgr: np.ndarray) -> list[Box]:
     )
     if len(faces) == 0:
         return []
-    boxes = [(int(x), int(y), int(w), int(h)) for x, y, w, h in faces]
-    return [
-        box
-        for box in boxes
-        if box[2] >= MIN_FACE_PIXELS and box[3] >= MIN_FACE_PIXELS
+    candidates = [
+        (int(x), int(y), int(w), int(h))
+        for x, y, w, h in faces
+        if int(w) >= MIN_FACE_PIXELS and int(h) >= MIN_FACE_PIXELS
     ]
+    if not candidates:
+        return []
+    eye_cascades = _load_eye_cascades()
+    verified = []
+    for x, y, w, h in candidates:
+        roi_gray = gray[y : y + h, x : x + w]
+        roi_bgr = bgr[y : y + h, x : x + w]
+        if roi_gray.size == 0:
+            continue
+        cutoff = max(1, int(h * EYE_SEARCH_HEIGHT_RATIO))
+        eye_hits = (
+            _count_eye_hits(roi_gray[:cutoff, :], eye_cascades)
+            if eye_cascades
+            else 0
+        )
+        if is_verified_face(roi_bgr, roi_gray, eye_hits):
+            verified.append((x, y, w, h))
+    return verified
 
 
 def to_bgr(image: Image.Image) -> np.ndarray:
@@ -102,7 +218,12 @@ def _padded_box(box: Box, image_width: int, image_height: int) -> Box:
 
 
 def blur_face_regions(image: Image.Image, boxes: list[Box]) -> Image.Image:
-    """Return a copy with a heavy Gaussian blur applied inside each box."""
+    """Return a copy with a heavy Gaussian blur applied inside each box.
+
+    The blurred patch blends in through a soft-feathered mask, so the
+    transition melts into the photo instead of cutting a hard box.
+    Nothing outside the padded region ever changes.
+    """
     width, height = image.size
     blurred = image.copy()
     for box in boxes:
@@ -111,7 +232,15 @@ def blur_face_regions(image: Image.Image, boxes: list[Box]) -> Image.Image:
             continue
         region = blurred.crop((x, y, x + w, y + h))
         radius = max(10, max(w, h) // 2)
-        blurred.paste(region.filter(ImageFilter.GaussianBlur(radius)), (x, y))
+        soft = region.filter(ImageFilter.GaussianBlur(radius))
+        feather = max(BLUR_FEATHER_MIN, min(w, h) // BLUR_FEATHER_DIVISOR)
+        mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(mask).rectangle(
+            [feather, feather, w - feather - 1, h - feather - 1],
+            fill=255,
+        )
+        mask = mask.filter(ImageFilter.GaussianBlur(feather))
+        blurred.paste(soft, (x, y), mask)
     return blurred
 
 

@@ -1705,8 +1705,19 @@ def render_home(developer_mode: bool = False) -> None:
             "Regional hint (Optional)",
             key=hint_key_for_epoch(st.session_state["upload_epoch"]),
             placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
-            help="Providing a state, landmark, or landscape context helps narrow spatial confidence faster.",
+            help=(
+                "Providing a state, landmark, or landscape context "
+                "helps narrow spatial confidence faster. No need to "
+                "press Enter - whatever you typed is included when "
+                "you tap Analyze."
+            ),
             disabled=is_analyzing or developer_mode,
+            # Commit on every keystroke without a rerun, so typed
+            # text is staged in the browser (desktop and mobile)
+            # and delivered with the Analyze click even if the user
+            # never pressed Enter or blurred the field.
+            live="0ms",
+            on_change="ignore",
         )
         if developer_mode:
             st.space("small")

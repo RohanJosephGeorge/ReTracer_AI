@@ -124,8 +124,15 @@ class UploadFeedbackTests(unittest.TestCase):
             "Regional hint (Optional)",
             key="regional_hint_input_0",
             placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
-            help="Providing a state, landmark, or landscape context helps narrow spatial confidence faster.",
+            help=(
+                "Providing a state, landmark, or landscape context "
+                "helps narrow spatial confidence faster. No need to "
+                "press Enter - whatever you typed is included when "
+                "you tap Analyze."
+            ),
             disabled=False,
+            live="0ms",
+            on_change="ignore",
         )
 
     def test_single_uploader_without_duplicate_header_card(self):

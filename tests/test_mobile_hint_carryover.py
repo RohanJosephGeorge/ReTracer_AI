@@ -151,6 +151,19 @@ class HintCarryoverTests(unittest.TestCase):
         self.assertIs(state["analysis_results"], outcome)
 
 
+class HintNoEnterCommitTests(unittest.TestCase):
+    def test_hint_commits_while_typing_without_enter(self):
+        state = home_state()
+        mock_st = run_home(state)
+        mock_st.text_input.assert_called_once()
+        kwargs = mock_st.text_input.call_args.kwargs
+        self.assertTrue(
+            kwargs.get("live"),
+            "hint must commit while typing (live) so Enter is not required",
+        )
+        self.assertEqual(kwargs.get("on_change"), "ignore")
+
+
 class UploadKeyTests(unittest.TestCase):
     def test_none_returns_none(self):
         self.assertIsNone(app.upload_key_for_file(None))

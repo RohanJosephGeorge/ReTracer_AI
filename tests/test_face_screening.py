@@ -18,8 +18,11 @@ from face_screening import (
     detect_face_boxes,
     face_area_ratio,
     find_oversized_face,
+    is_verified_face,
     preprocess_uploaded_image,
     screen_image_faces,
+    skin_fraction,
+    symmetry_score,
 )
 
 
@@ -102,6 +105,99 @@ class BlurLocalityTests(unittest.TestCase):
         np.testing.assert_array_equal(np.asarray(img), snapshot)
 
 
+SKIN_BGR = (150, 180, 220)  # warm skin tone in BGR order
+NON_SKIN_BGR = (200, 80, 50)  # saturated blue in BGR order
+
+
+def symmetric_face_like_rois():
+    """Mirrored skin ROI with contrast (glasses-band blob), BGR + gray."""
+    half_bgr = np.full((60, 30, 3), SKIN_BGR, dtype=np.uint8)
+    half_bgr[10:25, 5:25] = (40, 40, 40)
+    bgr = np.concatenate([half_bgr, np.fliplr(half_bgr)], axis=1)
+    gray = bgr[:, :, 0].copy()
+    return bgr, gray
+
+
+class SkinFractionTests(unittest.TestCase):
+    def test_skin_tone_scores_high(self):
+        roi = np.full((60, 60, 3), SKIN_BGR, dtype=np.uint8)
+        self.assertGreater(skin_fraction(roi), 0.9)
+
+    def test_non_skin_scores_low(self):
+        roi = np.full((60, 60, 3), NON_SKIN_BGR, dtype=np.uint8)
+        self.assertLess(skin_fraction(roi), 0.1)
+
+
+class SymmetryScoreTests(unittest.TestCase):
+    def test_mirrored_region_scores_zero(self):
+        left = np.arange(60 * 30, dtype=np.uint8).reshape(60, 30)
+        gray = np.concatenate([left, np.fliplr(left)], axis=1)
+        self.assertEqual(symmetry_score(gray), 0.0)
+
+    def test_split_region_scores_high(self):
+        gray = np.zeros((60, 60), dtype=np.uint8)
+        gray[:, 30:] = 255
+        self.assertGreater(
+            symmetry_score(gray), face_screening.SYMMETRY_SCORE_MAX
+        )
+
+    def test_flat_region_never_passes(self):
+        gray = np.zeros((60, 60), dtype=np.uint8)
+        self.assertGreater(
+            symmetry_score(gray), face_screening.SYMMETRY_SCORE_MAX
+        )
+
+
+class VerifyCandidateTests(unittest.TestCase):
+    def test_eyes_confirm_despite_no_skin(self):
+        bgr = np.full((60, 60, 3), NON_SKIN_BGR, dtype=np.uint8)
+        gray = np.zeros((60, 60), dtype=np.uint8)
+        gray[:, 30:] = 255
+        self.assertTrue(is_verified_face(bgr, gray, eye_hits=1))
+
+    def test_skin_and_symmetry_confirm_without_eyes(self):
+        bgr, gray = symmetric_face_like_rois()
+        self.assertTrue(is_verified_face(bgr, gray, eye_hits=0))
+
+    def test_low_skin_rejected_without_eyes(self):
+        bgr = np.full((60, 60, 3), NON_SKIN_BGR, dtype=np.uint8)
+        gray = np.zeros((60, 60), dtype=np.uint8)
+        self.assertFalse(is_verified_face(bgr, gray, eye_hits=0))
+
+    def test_asymmetric_skin_rejected_without_eyes(self):
+        bgr = np.full((60, 60, 3), SKIN_BGR, dtype=np.uint8)
+        gray = np.zeros((60, 60), dtype=np.uint8)
+        gray[:, 30:] = 255
+        self.assertFalse(is_verified_face(bgr, gray, eye_hits=0))
+
+
+class FeatheredBlurTests(unittest.TestCase):
+    def test_blur_stays_inside_padded_region(self):
+        img = gradient_image()
+        out = blur_face_regions(img, [(80, 80, 40, 40)])
+        diff = np.abs(
+            np.asarray(img).astype(int) - np.asarray(out).astype(int)
+        ).sum(axis=-1)
+        # Padded box is (74, 74, 52, 52): rows/cols outside stay exact.
+        self.assertEqual(diff[73, 100], 0)
+        self.assertEqual(diff[100, 73], 0)
+        self.assertEqual(diff[127, 100], 0)
+        self.assertEqual(diff[100, 127], 0)
+
+    def test_blur_edge_transition_is_softened(self):
+        step = np.zeros((200, 200, 3), dtype=np.uint8)
+        step[:, 100:] = 255
+        img = Image.fromarray(step, mode="RGB")
+        out = blur_face_regions(img, [(80, 80, 40, 40)])
+        diff = np.abs(
+            np.asarray(img).astype(int) - np.asarray(out).astype(int)
+        ).sum(axis=-1)
+        edge_row = diff[74, 74:126].max()
+        center_rows = diff[95:105, 74:126].max()
+        self.assertGreater(center_rows, 0)
+        self.assertLess(edge_row, center_rows)
+
+
 class PreprocessUploadTests(unittest.TestCase):
     def test_garbage_bytes_fail_closed(self):
         status, _, out = preprocess_uploaded_image(io.BytesIO(b"not an image"))
@@ -137,16 +233,20 @@ class FakeCv2Haar:
 
     COLOR_BGR2GRAY = 6
 
-    def __init__(self, faces, constructed, detections, empty=False):
+    def __init__(self, faces, constructed, detections, empty=False,
+                 eye_faces=None):
         self._faces = faces
         self.constructed = constructed
         self.detections = detections
         self._empty = empty
+        self._eye_faces = faces if eye_faces is None else eye_faces
         self.data = SimpleNamespace(haarcascades="/fake/haarcascades/")
         self.cvt_calls = []
 
     def CascadeClassifier(self, path):
         self.constructed.append(path)
+        if "eye" in path:
+            return FakeCascade(self._eye_faces, self.detections, self._empty)
         return FakeCascade(self._faces, self.detections, self._empty)
 
     def cvtColor(self, image, code):
@@ -156,8 +256,8 @@ class FakeCv2Haar:
 
 
 class HaarCascadeTests(unittest.TestCase):
-    def detect_with(self, faces, empty=False):
-        fake = FakeCv2Haar(faces, [], [], empty)
+    def detect_with(self, faces, empty=False, eye_faces=None):
+        fake = FakeCv2Haar(faces, [], [], empty, eye_faces=eye_faces)
         bgr = np.zeros((480, 640, 3), dtype=np.uint8)
         with patch.object(face_screening, "cv2", fake):
             return detect_face_boxes(bgr), fake
@@ -201,6 +301,35 @@ class HaarCascadeTests(unittest.TestCase):
     def test_no_faces_returns_empty(self):
         boxes, _ = self.detect_with(())
         self.assertEqual(boxes, [])
+
+    def test_eye_hit_keeps_candidate(self):
+        boxes, _ = self.detect_with(
+            np.array([[10, 10, 100, 80]], dtype=np.int32),
+            eye_faces=np.array([[20, 20, 20, 20]], dtype=np.int32),
+        )
+        self.assertEqual(boxes, [(10, 10, 100, 80)])
+
+    def test_unverified_candidate_filtered_out(self):
+        # Face cascade fires on a black ROI (no skin, no structure)
+        # with no eye hits: not a face, dropped before blur/reject.
+        boxes, _ = self.detect_with(
+            np.array([[10, 10, 100, 80]], dtype=np.int32),
+            eye_faces=(),
+        )
+        self.assertEqual(boxes, [])
+
+    def test_eye_cascades_loaded_offline(self):
+        _, fake = self.detect_with(
+            np.array([[10, 10, 100, 80]], dtype=np.int32),
+            eye_faces=(),
+        )
+        self.assertIn(
+            "/fake/haarcascades/haarcascade_eye_tree_eyeglasses.xml",
+            fake.constructed,
+        )
+        self.assertIn(
+            "/fake/haarcascades/haarcascade_eye.xml", fake.constructed
+        )
 
     def test_missing_cascade_fails_closed(self):
         with self.assertRaises(RuntimeError):
