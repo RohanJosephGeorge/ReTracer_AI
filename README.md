@@ -1,9 +1,9 @@
 # ReTracer AI — Spatial Reasoning Geolocation Engine
 
 > **Upload a memory. We retrace the map.**
-> A privacy-first AI detective that reverse-geolocates any photo — no GPS tags required.
+> A privacy-first AI detective that reverse-geolocates any photo, no GPS tags required.
 
-Built for the **Meta AI Hackathon**. ReTracer AI dissects a photo with SAM 3.1 segmentation, reasons like Sherlock Holmes with Muse Wonder, and returns a city, coordinates, confidence score, and a human-readable deduction trail — all behind strict privacy gates.
+Built for the **Meta AI Hackathon**. ReTracer AI dissects a photo with SAM 3.1 segmentation, reasons like Sherlock Holmes with Muse Wonder, and returns a city, coordinates, confidence score, and a human-readable deduction trail, all behind strict privacy gates.
 
 ---
 Live Demo: https://retracerai.streamlit.app/
