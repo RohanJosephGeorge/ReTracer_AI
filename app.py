@@ -32,11 +32,6 @@ from spatial_reasoning import (
 )
 
 try:
-    import streamlit_shadcn_ui as ui
-except ImportError:  # pragma: no cover
-    ui = None
-
-try:
     from streamlit_lottie import st_lottie
 except ImportError:  # pragma: no cover
     st_lottie = None
@@ -1536,7 +1531,6 @@ def render_validation_badge(text: str) -> None:
     )
 
 
-HINT_KEY_PREFIX = "regional_hint_input"
 UPLOAD_HELP_TEXT = (
     "Sanitized locally with metadata removal and face blurring before "
     "spatial analysis."
@@ -1548,23 +1542,17 @@ MOBILE_UPLOAD_TIP = (
 )
 
 
-def hint_key_for_epoch(epoch: int) -> str:
-    """Widget key scoping the regional hint to one upload generation.
-
-    Refresh bumps the epoch, so the new hint input mounts with a fresh
-    identity that cannot inherit the previous hint's text.
-    """
-    return f"{HINT_KEY_PREFIX}_{epoch}"
-
-
 def clear_hint_state() -> None:
-    """Delete every regional-hint widget value from session state.
+    """Delete the regional-hint widget value and click snapshot.
 
-    Covers the legacy unversioned key plus all epoch-scoped keys, so a
-    cleared hint can never resurface in a later submit.
+    Must run before the hint widget is created (Refresh callback or
+    new-upload guard), so the textbox mounts empty in the same run
+    and a cleared hint can never resurface in a later submit. The
+    "active_hint" snapshot goes too, otherwise the widget value
+    binding would repopulate the cleared text.
     """
-    for key in list(st.session_state.keys()):
-        if key == HINT_KEY_PREFIX or key.startswith(HINT_KEY_PREFIX + "_"):
+    for key in ("regional_hint_input", "active_hint"):
+        if key in st.session_state:
             del st.session_state[key]
 
 
@@ -1578,15 +1566,21 @@ def upload_key_for_file(uploaded_file) -> str | None:
 
 
 def start_analysis() -> None:
-    """Lock the UI and clear stale results before the script body runs.
+    """Lock the UI, snapshot the hint, clear stale results.
 
     Registered as the Analyze button's on_click callback. Widget
-    callbacks fire at the start of the triggering run, so render_home
-    observes the armed lock immediately and runs the pipeline inline
-    with no manual rerun under the button.
+    callbacks fire at the start of the triggering run, so the raw
+    hint is frozen into "active_hint" before any progress UI
+    renders, and render_home observes the armed lock immediately
+    and runs the pipeline inline with no manual rerun under the
+    button.
     """
     st.session_state["is_analyzing"] = True
     st.session_state["analysis_results"] = None
+    # Freeze the submitted hint at click time: the pipeline and the
+    # widget binding both read this snapshot, never the live widget
+    # return, so progress reruns cannot wipe it mid-analysis.
+    st.session_state["active_hint"] = st.session_state.get("regional_hint_input", "").strip()
 
 
 def reset_home_for_new_upload() -> None:
@@ -1596,7 +1590,7 @@ def reset_home_for_new_upload() -> None:
     callbacks fire at the start of the triggering run, so render_home
     observes the cleared state immediately. Bumping the upload epoch
     remounts the uploader with a fresh identity (guaranteed empty),
-    and clearing every hint widget key empties its text.
+    and deleting the hint key empties its text.
     """
     st.session_state["analysis_results"] = None
     st.session_state["last_upload_key"] = None
@@ -1607,7 +1601,6 @@ def reset_home_for_new_upload() -> None:
         st.session_state.get("upload_epoch", 0) + 1
     )
     clear_hint_state()
-    # (legacy key covered by clear_hint_state)
 
 
 def render_home(developer_mode: bool = False) -> None:
@@ -1662,16 +1655,6 @@ def render_home(developer_mode: bool = False) -> None:
         developer_mode = bool(st.session_state["dev_mode"])
     st.session_state["developer_mode"] = developer_mode
     st.space("small")
-
-    if ui is None:
-        st.error(
-            "Missing dependency `streamlit-shadcn-ui`. "
-            "Install it with: "
-            "`pip install git+https://github.com/ObservedObserver/streamlit-shadcn-ui.git`"
-        )
-        return
-
-    st.space("small")
     with st.container(border=True):
         uploaded_file = st.file_uploader(
             "Upload a memory",
@@ -1701,24 +1684,53 @@ def render_home(developer_mode: bool = False) -> None:
             st.session_state["wonder_result"] = None
             clear_hint_state()
         st.space("small")
-        regional_hint = st.text_input(
-            "Regional hint (Optional)",
-            key=hint_key_for_epoch(st.session_state["upload_epoch"]),
-            placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
-            help=(
-                "Providing a state, landmark, or landscape context "
-                "helps narrow spatial confidence faster. No need to "
-                "press Enter - whatever you typed is included when "
-                "you tap Analyze."
-            ),
-            disabled=is_analyzing or developer_mode,
-            # Commit on every keystroke without a rerun, so typed
-            # text is staged in the browser (desktop and mobile)
-            # and delivered with the Analyze click even if the user
-            # never pressed Enter or blurred the field.
-            live="0ms",
-            on_change="ignore",
-        )
+        # The hint lives in a form with its submit button so both
+        # are delivered atomically on every device: tapping Analyze
+        # Memory always carries whatever is typed, with no Enter
+        # needed.
+        if is_analyzing and not developer_mode:
+            # Pin the submitted value before the widget mounts: the input
+            # locks during analysis, and a disabled widget discards fresh
+            # frontend state. An explicit session-state write wins and
+            # survives, so the textbox stays populated while locked. This
+            # also re-freezes the snapshot in case the click callback
+            # raced ahead of the submitted form value.
+            committed_hint = st.session_state.get("regional_hint_input", "")
+            st.session_state["regional_hint_input"] = committed_hint
+            st.session_state["active_hint"] = committed_hint.strip()
+        with st.form("hint_form", border=False):
+            regional_hint = st.text_input(
+                "Regional hint (Optional)",
+                # Rebind to the last submitted snapshot so the text
+                # box stays populated across progress reruns.
+                value=st.session_state.get("active_hint", ""),
+                key="regional_hint_input",
+                placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
+                help=(
+                    "Providing a state, landmark, or landscape context "
+                    "helps narrow spatial confidence faster. It is sent "
+                    "together with Analyze Memory, so no extra Enter "
+                    "press is needed."
+                ),
+                # Locked during analysis so the hint cannot be edited
+                # mid-run. Safe against Streamlit's disabled-widget value
+                # discard because the pin above re-freezes the submitted
+                # value first.
+                disabled=is_analyzing or developer_mode,
+            )
+            st.space("small")
+            # The on_click callback (start_analysis) is the source
+            # of truth for arming; the submit return value is
+            # intentionally ignored so a settled or re-read trigger
+            # can never re-arm or loop.
+            st.form_submit_button(
+                "Analyze Memory",
+                key="analyze_btn",
+                type="primary",
+                width="stretch",
+                disabled=is_analyzing,
+                on_click=start_analysis,
+            )
         if developer_mode:
             st.space("small")
             st.image(
@@ -1727,24 +1739,15 @@ def render_home(developer_mode: bool = False) -> None:
                 width="stretch",
             )
     if developer_mode:
-        # Demo mode ignores any retained live inputs: uploads and hints
+        # Demo mode ignores any retained inputs: uploads and hints
         # are locked, and the mock pipeline runs on the pre-made demo.
         active_file = None
         regional_hint = ""
-    st.space("small")
-    _, btn_col, _ = st.columns([1, 2, 1])
-    with btn_col:
-        # The on_click callback (start_analysis) is the source of truth
-        # for arming; the trigger return value is intentionally ignored
-        # so a settled or re-read trigger can never re-arm or loop.
-        ui.button(
-            "Analyze Memory",
-            key="analyze_btn",
-            size="lg",
-            width="stretch",
-            disabled=is_analyzing,
-            on_click=start_analysis,
-        )
+    else:
+        # The click-time snapshot is the pipeline's source of truth;
+        # never the live widget return, which progress reruns could
+        # otherwise wipe mid-analysis.
+        regional_hint = st.session_state.get("active_hint", "")
 
     # Armed by start_analysis() before this run. Placeholders and API
     # calls live inside this gate so the bar exists only while analysis

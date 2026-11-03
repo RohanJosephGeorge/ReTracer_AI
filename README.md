@@ -74,7 +74,7 @@ Upload → Validate → Sanitize → Quality Gate → Face Screen
 | Layer | Technology |
 |---|---|
 | Language | Python 3 (tested on 3.14.6) |
-| Frontend | `streamlit>=1.45.0`, `streamlit-option-menu>=0.4.0`, `streamlit-extras>=0.7.0`, `streamlit-shadcn-ui` (git: `ObservedObserver/streamlit-shadcn-ui`), `streamlit-antd-components>=0.3.2`, `streamlit-lottie>=0.0.5`, `streamlit-folium>=0.15.0`, `folium`, `pandas` |
+| Frontend | `streamlit>=1.57`, `streamlit-option-menu>=0.4.0`, `streamlit-extras>=0.7.0`, `streamlit-antd-components>=0.3.2`, `streamlit-lottie>=0.0.5`, `streamlit-folium>=0.15.0`, `folium`, `pandas` |
 | Backend | `fastapi>=0.110.0`, `uvicorn>=0.29.0` |
 | Meta AI | Model API `sam-3.1` + `muse-wonder-1.0` via `aiohttp>=3.9`, `meta-sam-parser>=0.0.5`, `tenacity>=9.0` (2 retries, 2s/4s backoff on 429/503/504) |
 | Vision | `opencv-python-headless>=4.8,<5` (Haar cascade, offline), `pillow>=10.0.0` |

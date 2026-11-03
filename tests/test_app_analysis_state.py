@@ -45,11 +45,8 @@ def run_armed_home(state, execute):
     mock_st.file_uploader.return_value = None
     mock_st.text_input.return_value = ""
     mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
-    mock_ui = MagicMock()
-    mock_ui.button.return_value = False
     with (
         patch.object(app, "st", mock_st),
-        patch.object(app, "ui", mock_ui),
         patch.object(app, "execute_analysis", execute),
         patch.object(app, "load_lottie_animation", return_value=None),
         patch("time.sleep"),

@@ -25,8 +25,6 @@ import app
 # return value is ignored by design.
 if not getattr(app, "_progress_probe_armed", False):
     app._progress_probe_armed = True
-    fake_ui = MagicMock()
-    app.ui = fake_ui
     app.st_lottie = None
     app.load_lottie_animation = lambda *args, **kwargs: None
     app.start_analysis()
@@ -52,7 +50,6 @@ def _event_loop_available():
 )
 class ProgressRenderTests(unittest.TestCase):
     def test_lock_bar_and_persistence_across_runs(self):
-        orig_ui = app.ui
         orig_lottie = app.st_lottie
         orig_load = app.load_lottie_animation
         try:
@@ -86,7 +83,6 @@ class ProgressRenderTests(unittest.TestCase):
                 any("Cannot analyze yet" in w.value for w in at.warning)
             )
         finally:
-            app.ui = orig_ui
             app.st_lottie = orig_lottie
             app.load_lottie_animation = orig_load
             if hasattr(app, "_progress_probe_armed"):

@@ -5,10 +5,11 @@ Requires aiohttp and tenacity. No network: HTTP is fully mocked.
 """
 
 import base64
+import contextlib
 import io
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 from tenacity import (
@@ -42,6 +43,7 @@ from spatial_reasoning import (
     encode_image_data_url,
     estimate_tokens,
     extract_output_text,
+    log_wonder_hint,
     parse_reasoning_result,
 )
 
@@ -173,7 +175,9 @@ class PromptTests(unittest.TestCase):
             },
             "",
         )
-        self.assertIn("(no hint provided)", prompt)
+        self.assertIn(
+            "REGIONAL HINT / GEOGRAPHIC CONTEXT: None provided", prompt
+        )
         self.assertIn('"concept": "text"', prompt)
         self.assertNotIn("raster", prompt)
 
@@ -222,6 +226,120 @@ class PromptTests(unittest.TestCase):
             "State / Region Radius",
         ):
             self.assertIn(phrase, prompt)
+
+
+class HintContextLineTests(unittest.TestCase):
+    def test_hint_rendered_as_geographic_context_line(self):
+        prompt = build_spatial_prompt(sample_summary(), "riverside cafes")
+        self.assertIn(
+            "REGIONAL HINT / GEOGRAPHIC CONTEXT: riverside cafes", prompt
+        )
+
+    def test_empty_hint_renders_none_provided(self):
+        prompt = build_spatial_prompt([], "")
+        self.assertIn(
+            "REGIONAL HINT / GEOGRAPHIC CONTEXT: None provided", prompt
+        )
+        # An empty hint must never render as a blank context line.
+        self.assertNotIn("REGIONAL HINT / GEOGRAPHIC CONTEXT: \n", prompt)
+
+    def test_blank_hint_renders_none_provided(self):
+        prompt = build_spatial_prompt([], "   ")
+        self.assertIn(
+            "REGIONAL HINT / GEOGRAPHIC CONTEXT: None provided", prompt
+        )
+
+    def test_hint_line_reaches_user_message_payload(self):
+        prompt = build_spatial_prompt([], "Kerala backwaters")
+        payload = build_reasoning_payload(prompt)
+        text = payload["input"][0]["content"][0]["text"]
+        self.assertIn(
+            "REGIONAL HINT / GEOGRAPHIC CONTEXT: Kerala backwaters", text
+        )
+
+
+class WonderHintLogTests(unittest.TestCase):
+    def logged_output(self, hint):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            log_wonder_hint(hint)
+        return buf.getvalue()
+
+    def test_log_confirms_hint_content(self):
+        self.assertIn(
+            "regional_hint='Kerala backwaters'",
+            self.logged_output("Kerala backwaters"),
+        )
+
+    def test_log_shows_none_provided_for_empty(self):
+        self.assertIn(
+            "regional_hint='None provided'", self.logged_output("")
+        )
+
+    def test_log_truncates_very_long_hints(self):
+        out = self.logged_output("x" * 500)
+        self.assertIn("regional_hint='", out)
+        self.assertNotIn("x" * 500, out)
+
+
+def _event_loop_available():
+    import asyncio
+
+    try:
+        loop = asyncio.new_event_loop()
+    except OSError:
+        return False
+    try:
+        loop.close()
+    except Exception:
+        pass
+    return True
+
+
+@unittest.skipUnless(
+    _event_loop_available(), "event loop unavailable in this sandbox"
+)
+class ReasonHintWiringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reason_passes_hint_explicitly_to_builder(self):
+        seen = {}
+
+        def fake_builder(masks, *args, regional_hint=None, **kwargs):
+            seen["args"] = args
+            seen["regional_hint"] = regional_hint
+            return "PROMPT"
+
+        session = FakeSession(
+            FakeJsonResponse(
+                payload=responses_json(json.dumps(good_payload()))
+            )
+        )
+        async with SpatialReasoner(
+            api_key="k", session=session, retrying=fast_retrying()
+        ) as reasoner:
+            with patch(
+                "spatial_reasoning.build_spatial_prompt",
+                side_effect=fake_builder,
+            ):
+                result = await reasoner.reason([], "Kerala backwaters")
+        self.assertEqual(seen["args"], ())
+        self.assertEqual(seen["regional_hint"], "Kerala backwaters")
+        self.assertEqual(result["city"], "Paris")
+
+    async def test_reason_logs_hint_before_firing(self):
+        session = FakeSession(
+            FakeJsonResponse(
+                payload=responses_json(json.dumps(good_payload()))
+            )
+        )
+        async with SpatialReasoner(
+            api_key="k", session=session, retrying=fast_retrying()
+        ) as reasoner:
+            with patch(
+                "spatial_reasoning.log_wonder_hint",
+                MagicMock(),
+            ) as mock_log:
+                await reasoner.reason([], "Kerala backwaters")
+        mock_log.assert_called_once_with("Kerala backwaters")
 
 
 class AggressivePromptTests(unittest.TestCase):

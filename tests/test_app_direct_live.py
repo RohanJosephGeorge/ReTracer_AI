@@ -82,11 +82,8 @@ class ToggleDefaultTests(unittest.TestCase):
         mock_st.file_uploader.return_value = None
         mock_st.text_input.return_value = ""
         mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
         ):
             app.render_home()
         self.assertFalse(state["developer_mode"])
@@ -107,17 +104,14 @@ class ToggleDefaultTests(unittest.TestCase):
         mock_st.file_uploader.return_value = None
         mock_st.text_input.return_value = ""
         mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
         ):
             app.render_home()
         mock_st.toggle.assert_called_once_with(
             "Developer Mode (Use Mock Data)", value=False, key="dev_mode"
         )
-        self.assertEqual(mock_st.columns.call_count, 3)
+        self.assertEqual(mock_st.columns.call_count, 2)
         self.assertEqual(
             mock_st.columns.call_args_list[0].args, ([4, 1, 1],)
         )
@@ -307,15 +301,12 @@ class DirectLivePipelineTests(unittest.TestCase):
         mock_st.file_uploader.return_value = None
         mock_st.text_input.return_value = ""
         mock_st.columns.return_value = (MagicMock(), MagicMock(), MagicMock())
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         mock_execute = MagicMock()
         mock_direct = MagicMock(
             return_value={"kind": "ok", "mock": False, "result": {}}
         )
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
             patch.object(app, "execute_analysis", mock_execute),
             patch.object(app, "execute_live_analysis_direct", mock_direct),
             patch.object(app, "load_lottie_animation", return_value=None),

@@ -522,23 +522,20 @@ class LockedProgressTests(unittest.TestCase):
             MagicMock(),
             MagicMock(),
         )
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         mock_execute = MagicMock(return_value=outcome)
         mock_show = MagicMock()
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
             patch.object(app, "execute_analysis", mock_execute),
             patch.object(app, "load_lottie_animation", return_value=None),
             patch.object(app, "show_centered_lottie", mock_show),
             patch("time.sleep") as mock_sleep,
         ):
             app.render_home(developer_mode=True)
-        mock_ui.button.assert_called_once_with(
+        mock_st.form_submit_button.assert_called_once_with(
             "Analyze Memory",
             key="analyze_btn",
-            size="lg",
+            type="primary",
             width="stretch",
             disabled=True,
             on_click=app.start_analysis,
@@ -587,13 +584,10 @@ class LockedProgressTests(unittest.TestCase):
             MagicMock(),
             MagicMock(),
         )
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         mock_execute = MagicMock()
         mock_direct = MagicMock(return_value=outcome)
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
             patch.object(app, "execute_analysis", mock_execute),
             patch.object(app, "execute_live_analysis_direct", mock_direct),
             patch.object(app, "load_lottie_animation", return_value=None),
@@ -637,13 +631,10 @@ class LockedProgressTests(unittest.TestCase):
             MagicMock(),
             MagicMock(),
         )
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         animation = {"v": "5.5.9"}
         mock_show = MagicMock()
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
             patch.object(
                 app,
                 "execute_analysis",
@@ -680,12 +671,9 @@ class LockedProgressTests(unittest.TestCase):
             MagicMock(),
             MagicMock(),
         )
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         mock_show = MagicMock()
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
             patch.object(
                 app, "execute_analysis", MagicMock(return_value=outcome)
             ),
@@ -711,12 +699,10 @@ class ResultsPersistenceTests(unittest.TestCase):
             MagicMock(),
             MagicMock(),
         )
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = clicked
+        mock_st.form_submit_button.return_value = clicked
         mock_execute = MagicMock()
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
             patch.object(app, "execute_analysis", mock_execute),
             patch.object(app, "load_lottie_animation", return_value=None),
             patch("time.sleep"),
@@ -800,7 +786,7 @@ class ResultsPersistenceTests(unittest.TestCase):
             upload_epoch=0,
         )
         state["regional_hint_input"] = "old hint"
-        state["regional_hint_input_0"] = "old hint"
+        state["active_hint"] = "old hint"
         mock_st = MagicMock()
         mock_st.session_state = state
         with patch.object(app, "st", mock_st):
@@ -815,7 +801,7 @@ class ResultsPersistenceTests(unittest.TestCase):
             self.assertIsNone(state[key])
         self.assertEqual(state["upload_epoch"], 1)
         self.assertNotIn("regional_hint_input", state)
-        self.assertNotIn("regional_hint_input_0", state)
+        self.assertNotIn("active_hint", state)
 
 
 if __name__ == "__main__":

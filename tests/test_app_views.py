@@ -62,12 +62,9 @@ class UploadFeedbackTests(unittest.TestCase):
         fake_upload.size = 1234
         mock_st.file_uploader.return_value = fake_upload
         mock_st.text_input.return_value = ""
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         fake_image = MagicMock()
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
             patch.object(
                 app, "is_valid_image", return_value=(True, "Valid image.")
             ),
@@ -122,17 +119,16 @@ class UploadFeedbackTests(unittest.TestCase):
         mock_st = self.run_home_with_clean_upload()
         mock_st.text_input.assert_called_once_with(
             "Regional hint (Optional)",
-            key="regional_hint_input_0",
+            value="",
+            key="regional_hint_input",
             placeholder="e.g., Kerala backwaters, Western Ghats, Old Delhi, Tokyo alley, Scottish Highlands",
             help=(
                 "Providing a state, landmark, or landscape context "
-                "helps narrow spatial confidence faster. No need to "
-                "press Enter - whatever you typed is included when "
-                "you tap Analyze."
+                "helps narrow spatial confidence faster. It is sent "
+                "together with Analyze Memory, so no extra Enter "
+                "press is needed."
             ),
             disabled=False,
-            live="0ms",
-            on_change="ignore",
         )
 
     def test_single_uploader_without_duplicate_header_card(self):
@@ -157,14 +153,10 @@ class UploadFeedbackTests(unittest.TestCase):
         )
         mock_st.file_uploader.return_value = None
         mock_st.text_input.return_value = ""
-        mock_ui = MagicMock()
-        mock_ui.button.return_value = False
         with (
             patch.object(app, "st", mock_st),
-            patch.object(app, "ui", mock_ui),
         ):
             app.render_home()
-        mock_ui.card.assert_not_called()
         mock_st.file_uploader.assert_called_once()
 
     def test_uploader_uses_memory_label_and_sanitization_help(self):

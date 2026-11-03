@@ -328,7 +328,7 @@ def build_spatial_prompt(
     rules = (
         list(strict_rules) if strict_rules is not None else list(DEFAULT_STRICT_RULES)
     )
-    hint = (regional_hint or "").strip() or "(no hint provided)"
+    hint = (regional_hint or "").strip() or "None provided"
     rules_text = "\n".join(f"{index}. {rule}" for index, rule in enumerate(rules, 1))
     summaries = [
         {key: mask.get(key) for key in PROMPT_MASK_KEYS}
@@ -388,7 +388,7 @@ TRANSIT & GRID TAXONOMY:
 CULTURAL, BUILT-ENVIRONMENT & VEHICULAR CUES:
 {cultural}
 
-REGIONAL HINT: {hint}
+REGIONAL HINT / GEOGRAPHIC CONTEXT: {hint}
 
 STRICT DEDUCTION RULES:
 {rules_text}
@@ -620,6 +620,16 @@ def build_reasoning_payload(
     }
 
 
+def log_wonder_hint(regional_hint: str | None) -> None:
+    """Print the hint value attached to the outgoing Wonder request.
+
+    Mirrors the prompt's normalization (blank becomes "None provided")
+    and truncates very long input so one log line stays lightweight.
+    """
+    hint = (regional_hint or "").strip() or "None provided"
+    print(f"[Wonder] firing reasoning request with regional_hint={hint[:200]!r}")
+
+
 class SpatialReasoner:
     """Async Muse Wonder client for mask-based geolocation."""
 
@@ -726,7 +736,7 @@ class SpatialReasoner:
         """
         prompt = build_spatial_prompt(
             sam_masks,
-            regional_hint,
+            regional_hint=regional_hint,
             strict_rules=strict_rules,
             has_image=image is not None,
         )
@@ -737,6 +747,7 @@ class SpatialReasoner:
                 encode_image_data_url(image) if image is not None else None
             ),
         )
+        log_wonder_hint(regional_hint)
         async for attempt in self._new_retrying():
             with attempt:
                 data = await self._fetch_json(payload)
