@@ -34,7 +34,7 @@ So I built ReTracer AI: forensic-grade geolocation with mathematical privacy gua
 
 Upload any street, landscape, or travel photo (plus an optional regional hint) and ReTracer AI:
 
-1. **Sanitizes locally** — strips all EXIF/metadata, rebuilds a clean RGB image (never resized), rejects non-images and files over 10 MB.
+1. **Sanitizes locally** — strips all EXIF/metadata, rebuilds a clean RGB image (never resized), rejects non-images and files over 20 MB.
 2. **Screens faces** — fully offline Haar-cascade detection. Faces covering > 5% of the frame are **rejected**; smaller faces are **heavily blurred** before anything else runs.
 3. **Gates visual quality** — Pillow-only variance + entropy check halts solid/blank/blurry images with no API call wasted.
 4. **Segments with SAM 3.1** — full frame plus a 2×2 quadrant grid (5 tiles max, 5 concurrent requests), one concept phrase per request across architecture, flora/soil, infrastructure, signage/scripts, and transport. Only masks scoring **> 0.90 confidence** survive.
@@ -167,7 +167,7 @@ streamlit run app.py
 Go to **http://localhost:8501** in your browser.
 
 - Keep **Developer Mode ON** for the instant Utrecht demo (no key, no backend needed).
-- Turn it **OFF**, upload a JPG/PNG/WebP (≤ 10 MB), add an optional hint (e.g. `Kerala backwaters`), and hit **Analyze** for the live pipeline.
+- Turn it **OFF**, upload a JPG/PNG/WebP (≤ 20 MB), add an optional hint (e.g. `Kerala backwaters`), and hit **Analyze** for the live pipeline.
 
 ### Troubleshooting
 
@@ -175,7 +175,7 @@ Go to **http://localhost:8501** in your browser.
 |---|---|
 | `Missing Meta Model API key` | Check `.streamlit/secrets.toml` (frontend) and `$env:META_API_KEY` (backend terminal). |
 | `Backend unavailable at ...` | Start step 5 first; confirm port 8000 is free and `SPATIAL_BACKEND_URL` matches. |
-| `File exceeds 10 MB limit` | Compress/resize the image; the cap is intentional. |
+| `File exceeds 20 MB limit` | Compress/resize the image; the cap is intentional. |
 | `Privacy warning: face covers ...` | Crop or blur faces and re-upload; large faces are never processed. |
 | `Image lacks sufficient visual data` | Upload a sharper, more detailed photo. |
 | `API congested, retrying...` | Transient 429/503/504 — the app retries automatically. |

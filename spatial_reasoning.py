@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import re
 from collections.abc import Callable, Sequence
@@ -27,10 +28,9 @@ from sam_segmentation import (
     SamApiError,
     SamRetryableError,
     default_sam_retrying,
-    encode_png_bytes,
     format_visual_breakdown,
     get_meta_api_key,
-    sniff_image_mime,
+    passes_confidence_filter,
     summarize_masks,
 )
 
@@ -47,6 +47,24 @@ REQUIRED_KEYS = (
     "precision_level",
 )
 MAX_REASONING_TOKENS = 250
+# The Wonder request carries exactly ONE image: the full-resolution
+# original, JPEG-encoded (never downscaled) so the macro view keeps
+# every pixel while staying far under API payload limits. Quadrant
+# micro-details travel strictly as high-confidence mask text.
+WONDER_JPEG_QUALITY = 90
+# The only mask fields ever embedded in the Wonder prompt: text and
+# coordinates. Raster bytes, base64 blobs, or any other extra keys on
+# caller-supplied masks are stripped before serialization.
+PROMPT_MASK_KEYS = (
+    "concept",
+    "tile",
+    "object_id",
+    "confidence",
+    "box",
+    "width",
+    "height",
+    "pixel_count",
+)
 
 # Authoritative strict rules for the geolocation prompt.
 # build_spatial_prompt() also accepts strict_rules per call to override.
@@ -131,7 +149,7 @@ FALLBACK_INSTRUCTION = (
     "segmentation masks are missing."
 )
 ATTACHED_IMAGE_NOTE = (
-    "NOTE: the full-resolution raw image is attached alongside this "
+    "NOTE: the full-resolution image is attached alongside this "
     "inventory; use it to corroborate or extend the mask evidence."
 )
 OCR_INSTRUCTION = (
@@ -288,8 +306,11 @@ def build_spatial_prompt(
     """Format SAM masks + hint into a strict geolocation prompt.
 
     sam_masks accepts summarize_masks() output or a full segment_image()
-    result dict (summarized automatically; raster bytes never enter the
-    prompt). Every mask also appears in a VISUAL BREAKDOWN section with
+    result dict (summarized automatically). Only masks scoring above
+    0.90 confidence reach the prompt, projected onto the text/coordinate
+    keys in PROMPT_MASK_KEYS; raster bytes, base64 blobs, and any other
+    extra fields never enter the prompt. Every mask also appears in a
+    VISUAL BREAKDOWN section with
     its category, normalized box, and spatial position. When has_image is
     True, an empty or minimal inventory adds a fallback instruction to
     analyze the attached raw image directly instead of halting, and a TEXT
@@ -309,7 +330,11 @@ def build_spatial_prompt(
     )
     hint = (regional_hint or "").strip() or "(no hint provided)"
     rules_text = "\n".join(f"{index}. {rule}" for index, rule in enumerate(rules, 1))
-    summaries = list(sam_masks)
+    summaries = [
+        {key: mask.get(key) for key in PROMPT_MASK_KEYS}
+        for mask in sam_masks
+        if isinstance(mask, dict) and passes_confidence_filter(mask)
+    ]
     masks_json = json.dumps(summaries, indent=2)
     breakdown = format_visual_breakdown(summaries)
     triangulation = "\n".join(f"- {item}" for item in TRIANGULATION_HEURISTICS)
@@ -514,25 +539,46 @@ def check_null_island(parsed: dict) -> dict:
     return parsed
 
 
+def encode_fullres_jpeg(image: Image.Image) -> bytes:
+    """JPEG-encode a full-resolution copy (dimensions never changed).
+
+    Re-encoding the attached photo as JPEG shrinks the base64 payload
+    roughly 5-10x versus PNG with zero resolution loss, keeping the
+    reasoning request under API payload limits. The caller's image is
+    never mutated.
+    """
+    buf = io.BytesIO()
+    image.convert("RGB").save(
+        buf, format="JPEG", quality=WONDER_JPEG_QUALITY
+    )
+    return buf.getvalue()
+
+
 def encode_image_data_url(image: Image.Image | bytes) -> str:
-    """Encode a PIL image or raw image bytes as a base64 data URL."""
+    """Encode a PIL image or raw image bytes as a full-res JPEG data URL.
+
+    Dimensions are never changed: only the encoding switches to JPEG
+    before base64 encoding.
+    """
     if isinstance(image, Image.Image):
-        data = encode_png_bytes(image)
-        mime = "image/png"
+        rgb = image.convert("RGB")
     elif isinstance(image, (bytes, bytearray)):
-        data = bytes(image)
         try:
-            mime = sniff_image_mime(data)
-        except ValueError as exc:
+            with Image.open(io.BytesIO(bytes(image))) as opened:
+                opened.load()
+                rgb = opened.convert("RGB")
+        except Exception as exc:
             raise SpatialReasoningError(
-                f"Cannot attach image to reasoning request: {exc}"
+                "Cannot attach image to reasoning request: "
+                f"unrecognized image bytes ({exc})"
             ) from exc
     else:
         raise SpatialReasoningError(
             "Reasoning image must be a PIL image or raw image bytes, "
             f"got {type(image).__name__}."
         )
-    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    data = encode_fullres_jpeg(rgb)
+    return f"data:image/jpeg;base64,{base64.b64encode(data).decode('ascii')}"
 
 
 def build_reasoning_payload(
@@ -544,8 +590,10 @@ def build_reasoning_payload(
     """Build the Meta Responses API payload for Muse Wonder.
 
     The prompt carries the SAM mask inventory; image_data_url attaches
-    the raw image as a second multimodal input part when provided.
-    Reasoning always runs at maximum effort.
+    the single full-resolution image as a second multimodal input part
+    when provided (quadrants never travel as images, only as mask
+    text). Reasoning always runs at maximum effort. "store" is False
+    so the API never persists the (large) request payload in history.
     """
     content: list[dict] = [{"type": "input_text", "text": prompt}]
     if image_data_url is not None:
@@ -559,6 +607,7 @@ def build_reasoning_payload(
                 "content": content,
             }
         ],
+        "store": False,
         "stream": False,
         "reasoning": {"effort": REASONING_EFFORT},
         "text": {
@@ -669,8 +718,9 @@ class SpatialReasoner:
         multi-agent debate is simulated inside that single pass per
         SYSTEM_DIRECTIVE, never through sequential debate rounds.
 
-        image attaches the raw photo as a second multimodal input part
-        next to the SAM mask inventory. Reasoning always proceeds, even
+        image attaches the single full-resolution photo as a second
+        multimodal input part next to the SAM mask inventory. Reasoning
+        always proceeds, even
         with zero masks: an empty inventory plus an attached image adds
         a fallback instruction to analyze the raw image directly.
         """

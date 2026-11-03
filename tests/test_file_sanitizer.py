@@ -1,11 +1,13 @@
 """Tests for the upload sanitizer: EXIF stripping, RGB normalize, no
-resize, and the 10MB cap.
+resize, and the 20MB cap.
 
 Run: python -m unittest discover -s tests -v
 Requires only numpy and Pillow (no OpenCV, no Streamlit).
 """
 
 import io
+import os
+import tomllib
 import unittest
 
 import numpy as np
@@ -13,6 +15,7 @@ from PIL import Image
 
 from file_sanitizer import (
     MAX_UPLOAD_BYTES,
+    MAX_UPLOAD_MB,
     encode_clean_jpeg,
     is_valid_image,
     sanitize_uploaded_image,
@@ -83,7 +86,7 @@ class SizeCapTests(unittest.TestCase):
         ok, message, out = sanitize_uploaded_image(big)
         self.assertFalse(ok)
         self.assertIsNone(out)
-        self.assertIn("10 MB", message)
+        self.assertIn("20 MB", message)
 
     def test_empty_rejected(self):
         ok, _, out = sanitize_uploaded_image(io.BytesIO(b""))
@@ -143,12 +146,27 @@ class ImageValidationTests(unittest.TestCase):
             self._upload(self._png_bytes(), size=MAX_UPLOAD_BYTES + 1)
         )
         self.assertFalse(valid)
-        self.assertIn("10 MB", message)
+        self.assertIn("20 MB", message)
 
     def test_wrong_magic_bytes_rejected(self):
         valid, message = is_valid_image(self._upload(b"GIF89a" + b"0" * 20))
         self.assertFalse(valid)
         self.assertIn("contents", message)
+
+
+class ServerCapConsistencyTests(unittest.TestCase):
+    def test_streamlit_config_matches_app_cap(self):
+        config_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            ".streamlit",
+            "config.toml",
+        )
+        with open(config_path, "rb") as handle:
+            config = tomllib.load(handle)
+        self.assertEqual(
+            config["server"]["maxUploadSize"], MAX_UPLOAD_MB
+        )
 
 
 class JpegEncodingTests(unittest.TestCase):

@@ -13,7 +13,7 @@ import streamlit as st
 from analysis import execute_analysis
 from backend import build_frontend_result, round_wonder_coordinates
 from face_screening import screen_image_faces
-from file_sanitizer import is_valid_image, sanitize_uploaded_image
+from file_sanitizer import MAX_UPLOAD_MB, is_valid_image, sanitize_uploaded_image
 from image_quality import has_sufficient_visual_data
 from sam_segmentation import (
     DENSE_IMAGE_MESSAGE,
@@ -1858,7 +1858,7 @@ def render_how_it_works() -> None:
     st.markdown(PIPELINE_DIAGRAM)
     st.subheader("How each stage works")
     st.markdown(
-        "1. **Upload** a JPEG, PNG, or WebP photo (max 10 MB) from your "
+        f"1. **Upload** a JPEG, PNG, or WebP photo (max {MAX_UPLOAD_MB} MB) from your "
         "files or photo gallery. On iPhone, use JPEG or PNG (Settings > "
         "Camera > Formats > Most Compatible). Files are stripped of "
         "metadata and normalized to RGB at full resolution.\n"

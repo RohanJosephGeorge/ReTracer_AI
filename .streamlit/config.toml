@@ -1,2 +1,9 @@
-[client]
-toolbarMode = "minimal"
+# Streamlit server settings for ReTracer AI.
+#
+# maxUploadSize is in megabytes and drives the "Limit 20MB per file"
+# label under the "Upload a memory" box (Streamlit defaults to 200).
+# Keep it in sync with MAX_UPLOAD_MB in file_sanitizer.py, which is
+# the app-level cap enforced during validation.
+
+[server]
+maxUploadSize = 20

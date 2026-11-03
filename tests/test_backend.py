@@ -179,7 +179,9 @@ class DecodeUploadTests(unittest.TestCase):
         with patch("backend.MAX_UPLOAD_BYTES", 10):
             with self.assertRaises(ValueError) as ctx:
                 decode_upload(base64.b64encode(b"x" * 11).decode("ascii"))
-        self.assertIn("10 MB", str(ctx.exception))
+        message = str(ctx.exception)
+        self.assertIn("exceeds", message)
+        self.assertIn("limit", message)
 
     def test_non_image_bytes_rejected(self):
         with self.assertRaises(ValueError):

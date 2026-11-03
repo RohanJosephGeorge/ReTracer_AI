@@ -115,7 +115,7 @@ def decode_upload(image_jpeg_base64: str) -> Image.Image:
     if not data:
         raise ValueError("Decoded image is empty.")
     if len(data) > MAX_UPLOAD_BYTES:
-        raise ValueError("Decoded image exceeds the 10 MB limit.")
+        raise ValueError(f"Decoded image exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
     try:
         with Image.open(io.BytesIO(data)) as img:
             img.load()

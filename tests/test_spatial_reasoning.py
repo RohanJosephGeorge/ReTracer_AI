@@ -4,6 +4,7 @@ Run: python -m unittest discover -s tests -v
 Requires aiohttp and tenacity. No network: HTTP is fully mocked.
 """
 
+import base64
 import io
 import json
 import unittest
@@ -161,12 +162,42 @@ class PromptTests(unittest.TestCase):
 
     def test_prompt_accepts_full_result_dict(self):
         prompt = build_spatial_prompt(
-            {"masks": [{"concept": "text", "mask": {"raster": b"\x01"}}]},
+            {
+                "masks": [
+                    {
+                        "concept": "text",
+                        "confidence": 0.95,
+                        "mask": {"raster": b"\x01"},
+                    }
+                ]
+            },
             "",
         )
         self.assertIn("(no hint provided)", prompt)
         self.assertIn('"concept": "text"', prompt)
         self.assertNotIn("raster", prompt)
+
+    def test_prompt_drops_low_confidence_masks(self):
+        prompt = build_spatial_prompt(sample_summary(), "riverside cafes")
+        self.assertIn('"concept": "text"', prompt)
+        self.assertNotIn('"concept": "vegetation"', prompt)
+        self.assertNotIn('"object_id": "1"', prompt)
+        self.assertNotIn('"pixel_count": 88120', prompt)
+
+    def test_prompt_strips_extra_mask_fields(self):
+        blob = "QUJD" * 64
+        masks = [
+            dict(
+                sample_summary()[0],
+                raster=[0, 1, 0, 1],
+                data_url=f"data:image/png;base64,{blob}",
+            )
+        ]
+        prompt = build_spatial_prompt(masks, "riverside cafes")
+        self.assertIn('"concept": "text"', prompt)
+        self.assertNotIn("raster", prompt)
+        self.assertNotIn("data_url", prompt)
+        self.assertNotIn(blob, prompt)
 
     def test_custom_rules_replace_defaults(self):
         prompt = build_spatial_prompt([], "x", strict_rules=["Only reply {}."])
@@ -429,6 +460,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         body = session.calls[0]["json"]
         self.assertEqual(body["model"], "muse-wonder-1.0")
         self.assertFalse(body["stream"])
+        self.assertIs(body["store"], False)
         sent = body["input"][0]["content"][0]["text"]
         self.assertIn("riverside cafes", sent)
         self.assertIn("reasoning_steps", sent)
@@ -441,6 +473,29 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         reasoner = SpatialReasoner(api_key="k", session=session)
         await reasoner.reason(sample_summary(), "riverside cafes")
         self.assertEqual(len(session.calls), 1)
+
+    async def test_reason_with_image_sends_single_fullres_part(self):
+        session = FakeSession(
+            FakeJsonResponse(payload=responses_json(json.dumps(good_payload())))
+        )
+        reasoner = SpatialReasoner(api_key="k", session=session)
+        await reasoner.reason(
+            sample_summary(),
+            "riverside cafes",
+            image=Image.new("RGB", (2048, 1536), (9, 9, 9)),
+        )
+        body = session.calls[0]["json"]
+        self.assertIs(body["store"], False)
+        content = body["input"][0]["content"]
+        images = [part for part in content if part["type"] == "input_image"]
+        self.assertEqual(len(content), 2)
+        self.assertEqual(len(images), 1)
+        url = images[0]["image_url"]
+        self.assertTrue(url.startswith("data:image/jpeg;base64,"))
+        raw = base64.b64decode(url.split(",", 1)[1])
+        with Image.open(io.BytesIO(raw)) as decoded:
+            decoded.load()
+            self.assertEqual(decoded.size, (2048, 1536))
 
     async def test_model_override_honored(self):
         session = FakeSession(
@@ -549,8 +604,18 @@ class DualInputPayloadTests(unittest.TestCase):
         self.assertEqual(content[0]["type"], "input_text")
         self.assertEqual(content[0]["text"], "prompt")
 
+    def test_payload_disables_server_side_storage(self):
+        for payload in (
+            build_reasoning_payload("prompt"),
+            build_reasoning_payload(
+                "prompt", image_data_url="data:image/jpeg;base64,AAA"
+            ),
+        ):
+            self.assertIn("store", payload)
+            self.assertIs(payload["store"], False)
+
     def test_image_payload_pairs_text_with_raw_image(self):
-        url = "data:image/png;base64,AAA"
+        url = "data:image/jpeg;base64,AAA"
         payload = build_reasoning_payload("prompt", image_data_url=url)
         content = payload["input"][0]["content"]
         self.assertEqual(len(content), 2)
@@ -559,13 +624,33 @@ class DualInputPayloadTests(unittest.TestCase):
         self.assertEqual(content[1]["image_url"], url)
         self.assertEqual(payload["reasoning"], {"effort": "max"})
 
-    def test_encode_pil_image_to_png_data_url(self):
+    def test_encode_pil_image_to_fullres_jpeg_data_url(self):
         url = encode_image_data_url(Image.new("RGB", (4, 3), (1, 2, 3)))
-        self.assertTrue(url.startswith("data:image/png;base64,"))
+        self.assertTrue(url.startswith("data:image/jpeg;base64,"))
+        raw = base64.b64decode(url.split(",", 1)[1])
+        self.assertTrue(raw.startswith(b"\xff\xd8\xff"))
+        with Image.open(io.BytesIO(raw)) as decoded:
+            decoded.load()
+            self.assertEqual(decoded.size, (4, 3))
 
-    def test_encode_png_bytes_to_data_url(self):
+    def test_encode_image_bytes_to_fullres_jpeg_data_url(self):
         url = encode_image_data_url(tiny_png_bytes())
-        self.assertTrue(url.startswith("data:image/png;base64,"))
+        self.assertTrue(url.startswith("data:image/jpeg;base64,"))
+        raw = base64.b64decode(url.split(",", 1)[1])
+        self.assertTrue(raw.startswith(b"\xff\xd8\xff"))
+
+    def test_encode_preserves_full_resolution(self):
+        url = encode_image_data_url(Image.new("RGB", (2048, 1536), (9, 9, 9)))
+        raw = base64.b64decode(url.split(",", 1)[1])
+        self.assertTrue(raw.startswith(b"\xff\xd8\xff"))
+        with Image.open(io.BytesIO(raw)) as decoded:
+            decoded.load()
+            self.assertEqual(decoded.size, (2048, 1536))
+
+    def test_encode_leaves_caller_image_untouched(self):
+        original = Image.new("RGB", (2048, 1536), (9, 9, 9))
+        encode_image_data_url(original)
+        self.assertEqual(original.size, (2048, 1536))
 
     def test_encode_rejects_garbage_and_wrong_types(self):
         with self.assertRaises(SpatialReasoningError):
@@ -584,7 +669,9 @@ class DualInputPayloadTests(unittest.TestCase):
         self.assertIn("attached raw image directly", prompt)
 
     def test_rich_inventory_with_image_notes_attachment(self):
-        masks = sample_summary() + [dict(sample_summary()[0], object_id="2")]
+        masks = [
+            dict(sample_summary()[0], object_id=str(index)) for index in range(3)
+        ]
         prompt = build_spatial_prompt(masks, "hint", has_image=True)
         self.assertNotIn("attached raw image directly", prompt)
         self.assertIn("attached alongside", prompt)

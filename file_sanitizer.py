@@ -13,7 +13,8 @@ from typing import BinaryIO
 
 from PIL import Image
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_MB = 20
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 JPEG_QUALITY = 95
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -68,7 +69,7 @@ def is_valid_image(uploaded_file) -> tuple[bool, str]:
     if size == 0:
         return False, "File is empty."
     if size > MAX_UPLOAD_BYTES:
-        return False, "File exceeds 10 MB limit."
+        return False, f"File exceeds {MAX_UPLOAD_MB} MB limit."
 
     try:
         uploaded_file.seek(0)
