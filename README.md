@@ -7,6 +7,10 @@ Built for the **Meta AI Hackathon**. ReTracer AI dissects a photo with SAM 3.1 s
 
 ---
 Live Demo: https://retracerai.streamlit.app/
+<img width="841" height="797" alt="image" src="https://github.com/user-attachments/assets/6396b4b4-a488-4264-ac44-0649bb0635a6" />
+<img width="805" height="575" alt="image" src="https://github.com/user-attachments/assets/bcabd871-bfd6-46e8-95e4-86aead81d219" />
+
+
 
 ## Inspiration
 
@@ -18,13 +22,13 @@ ReTracer AI was built to anchor lost memories. I wanted to engineer an AI that d
 
 It is designed to help individuals, families, and caretakers piece together the geography of their history turning lost landscapes back into relived experiences.
 
-We were inspired by:
+I was inspired by:
 
 - How much location leaks from pixels alone, even after EXIF/GPS metadata is stripped.
 - The detective work of open-source geolocation — cross-referencing architecture, biomes, infrastructure, and text.
 - Meta's new Model API lineup: **SAM 3.1** for pixel-perfect segmentation and **Muse Wonder** for deep spatial reasoning.
 
-So we built ReTracer AI: forensic-grade geolocation with mathematical privacy guarantees.
+So I built ReTracer AI: forensic-grade geolocation with mathematical privacy guarantees.
 
 ## What It Does
 
@@ -184,6 +188,8 @@ Go to **http://localhost:8501** in your browser.
 - Blank/synthetic images halt with a `null`-coordinate convention instead of a fake `0.0, 0.0`.
 
 ## Project Structure
+
+<img width="1868" height="320" alt="image" src="https://github.com/user-attachments/assets/37a3d142-327c-49f1-b4ad-d34997624513" />
 
 ```text
 SpatialGeoguesser/
