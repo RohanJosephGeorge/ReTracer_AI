@@ -148,16 +148,16 @@ if FastAPI is not None:
     async def analyze(payload: AnalyzeRequest) -> dict:
         """Screen, segment, geolocate, then return privacy-rounded coords."""
         try:
-            api_key = get_backend_api_key()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
-        try:
             image = decode_upload(payload.image_jpeg_base64)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
         data_ok, data_message, _ = has_sufficient_visual_data(image)
         if not data_ok:
             raise HTTPException(status_code=422, detail=data_message)
+        try:
+            api_key = get_backend_api_key()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
         try:
             async with SamSegmenter(api_key=api_key) as segmenter:
                 sam_result = await segmenter.segment_image(image)
@@ -173,10 +173,16 @@ if FastAPI is not None:
             raise HTTPException(status_code=422, detail=str(exc))
         except SamApiError as exc:
             raise HTTPException(status_code=502, detail=str(exc))
-        rounded = round_wonder_coordinates(wonder_result)
-        return build_frontend_result(
-            rounded, payload.filename, payload.regional_hint
-        )
+        try:
+            rounded = round_wonder_coordinates(wonder_result)
+            return build_frontend_result(
+                rounded, payload.filename, payload.regional_hint
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream location result was invalid: {exc}",
+            )
 
 else:  # pragma: no cover - importable without server extras installed
     app = None
