@@ -341,5 +341,60 @@ class HaarCascadeTests(unittest.TestCase):
         self.assertIsNone(out)
 
 
+class ExtendedPathCascadeTests(unittest.TestCase):
+    """Cascade files must load under extended-length path prefixes.
+
+    Regression tests: cv2.data.haarcascades can carry a ``\\\\?\\``
+    prefix (extended-length path virtualization), which Python
+    accepts but OpenCV's FileStorage cannot open. The cascade then
+    loads empty and every upload halts at face screening, so the
+    prefix is stripped to the plain equivalent when that file
+    exists.
+    """
+
+    def detect_with_dir(self, cascade_dir, exists):
+        fake = FakeCv2Haar((), [], [])
+        fake.data = SimpleNamespace(haarcascades=cascade_dir)
+        bgr = np.zeros((480, 640, 3), dtype=np.uint8)
+        with (
+            patch.object(face_screening, "cv2", fake),
+            patch("os.path.exists", return_value=exists),
+        ):
+            boxes = detect_face_boxes(bgr)
+        return boxes, fake
+
+    def test_prefixed_dir_stripped_when_plain_exists(self):
+        boxes, fake = self.detect_with_dir(
+            "\\\\?\\C:\\fake\\haarcascades\\", exists=True
+        )
+        self.assertEqual(boxes, [])
+        self.assertEqual(
+            fake.constructed,
+            ["C:\\fake\\haarcascades\\haarcascade_frontalface_default.xml"],
+        )
+
+    def test_prefixed_dir_kept_when_plain_missing(self):
+        boxes, fake = self.detect_with_dir(
+            "\\\\?\\C:\\fake\\haarcascades\\", exists=False
+        )
+        self.assertEqual(boxes, [])
+        self.assertEqual(
+            fake.constructed,
+            [
+                "\\\\?\\C:\\fake\\haarcascades\\"
+                "haarcascade_frontalface_default.xml"
+            ],
+        )
+
+    def test_unc_prefix_rewritten_to_plain_unc(self):
+        with patch("os.path.exists", return_value=True):
+            self.assertEqual(
+                face_screening._cascade_path(
+                    "\\\\?\\UNC\\server\\share\\", "haarcascade_eye.xml"
+                ),
+                "\\\\server\\share\\haarcascade_eye.xml",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

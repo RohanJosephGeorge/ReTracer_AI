@@ -17,6 +17,7 @@ passed on. Only clean or successfully blurred images move forward.
 
 from __future__ import annotations
 
+import os
 from typing import BinaryIO, Callable
 
 import numpy as np
@@ -47,6 +48,30 @@ SYMMETRY_SCORE_MAX = 0.9
 
 Box = tuple[int, int, int, int]
 Detector = Callable[[np.ndarray], list[Box]]
+
+_EXTENDED_PATH_PREFIX = "\\\\?\\"
+_EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"
+
+
+def _cascade_path(cascade_dir: str, filename: str) -> str:
+    """Join a cascade file to a path OpenCV's FileStorage can open.
+
+    ``cv2.data.haarcascades`` inherits any prefix on the interpreter's
+    own path. Under extended-length (``\\\\?\\``) path virtualization
+    the joined path names a file Python can see but OpenCV cannot
+    open, so the cascade loads empty and every upload halts at face
+    screening. Strip the prefix to the plain equivalent when that
+    file exists; otherwise return the joined path unchanged.
+    """
+    path = cascade_dir + filename
+    plain = None
+    if path.startswith(_EXTENDED_UNC_PREFIX):
+        plain = "\\\\" + path[len(_EXTENDED_UNC_PREFIX):]
+    elif path.startswith(_EXTENDED_PATH_PREFIX):
+        plain = path[len(_EXTENDED_PATH_PREFIX):]
+    if plain is not None and os.path.exists(plain):
+        return plain
+    return path
 
 
 def face_area_ratio(box: Box, image_width: int, image_height: int) -> float:
@@ -123,7 +148,7 @@ def _load_eye_cascades() -> list:
     for filename in EYE_CASCADE_FILES:
         try:
             cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades + filename
+                _cascade_path(cv2.data.haarcascades, filename)
             )
             empty = cascade.empty()
         except Exception:
@@ -158,7 +183,9 @@ def detect_face_boxes(bgr: np.ndarray) -> list[Box]:
     if cv2 is None:
         raise RuntimeError("OpenCV is not installed; face detection unavailable.")
     cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        _cascade_path(
+            cv2.data.haarcascades, "haarcascade_frontalface_default.xml"
+        )
     )
     if cascade.empty():
         raise RuntimeError(
