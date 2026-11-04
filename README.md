@@ -25,7 +25,7 @@ It is designed to help individuals, families, and caretakers piece together the 
 I was inspired by:
 
 - How much location leaks from pixels alone, even after EXIF/GPS metadata is stripped.
-- The detective work of open-source geolocation — cross-referencing architecture, biomes, infrastructure, and text.
+- The detective work of open-source geolocation , cross-referencing architecture, biomes, infrastructure, and text.
 - Meta's new Model API lineup: **SAM 3.1** for pixel-perfect segmentation and **Muse Wonder** for deep spatial reasoning.
 
 So I built ReTracer AI: forensic-grade geolocation with mathematical privacy guarantees.
