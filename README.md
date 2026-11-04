@@ -1,4 +1,4 @@
-# ReTracer AI — Spatial Reasoning Geolocation Engine
+# ReTracer AI : Spatial Reasoning Geolocation Engine
 
 > **Upload a memory. We retrace the map.**
 > A privacy-first AI detective that reverse-geolocates any photo, no GPS tags required.
@@ -34,12 +34,12 @@ So I built ReTracer AI: forensic-grade geolocation with mathematical privacy gua
 
 Upload any street, landscape, or travel photo (plus an optional regional hint) and ReTracer AI:
 
-1. **Sanitizes locally** — strips all EXIF/metadata, rebuilds a clean RGB image (never resized), rejects non-images and files over 20 MB.
-2. **Screens faces** — fully offline Haar-cascade detection. Faces covering > 5% of the frame are **rejected**; smaller faces are **heavily blurred** before anything else runs.
-3. **Gates visual quality** — Pillow-only variance + entropy check halts solid/blank/blurry images with no API call wasted.
+1. **Sanitizes locally** : strips all EXIF/metadata, rebuilds a clean RGB image (never resized), rejects non-images and files over 20 MB.
+2. **Screens faces** : fully offline Haar-cascade detection. Faces covering > 5% of the frame are **rejected**; smaller faces are **heavily blurred** before anything else runs.
+3. **Gates visual quality** : Pillow-only variance + entropy check halts solid/blank/blurry images with no API call wasted.
 4. **Segments with SAM 3.1** — full frame plus a 2×2 quadrant grid (5 tiles max, 5 concurrent requests), one concept phrase per request across architecture, flora/soil, infrastructure, signage/scripts, and transport. Only masks scoring **> 0.90 confidence** survive.
-5. **Reasons with Muse Wonder** — weighs 3 competing location hypotheses against every clue (solar geometry, pole architecture, driving side, plate colors, vegetation, scripts/OCR, coastal and transit markers), eliminates the weak ones, and outputs strict JSON: `latitude`, `longitude`, `city`, `country`, `reasoning_steps`, `confidence_score`, `precision_level`.
-6. **Protects the exact fix** — coordinates are rounded to **3 decimals (~100 m grid)** before they ever reach the browser.
+5. **Reasons with Muse Wonder** : weighs 3 competing location hypotheses against every clue (solar geometry, pole architecture, driving side, plate colors, vegetation, scripts/OCR, coastal and transit markers), eliminates the weak ones, and outputs strict JSON: `latitude`, `longitude`, `city`, `country`, `reasoning_steps`, `confidence_score`, `precision_level`.
+6. **Protects the exact fix** : coordinates are rounded to **3 decimals (~100 m grid)** before they ever reach the browser.
 7. **Renders the verdict** — a glassmorphism dashboard with location, precision badge, confidence, a "Detective's Deduction" timeline, and an interactive Folium map.
 
 Two modes:
