@@ -209,5 +209,4 @@ SpatialGeoguesser/
 ## What's Next
 
 - Multi-image trip stitching (one route from a photo album).
-- Confidence-calibrated search radius overlay on the map.
 - Regional model packs (finer taxonomies per continent).
